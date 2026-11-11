@@ -1,0 +1,2 @@
+#!/bin/sh
+python tools/check_repository.py --staged || exit 1

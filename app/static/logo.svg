@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Расписание">
+  <g fill="none" stroke="#f7f0e2" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="12.5" y="16" width="39" height="35" rx="5.5"/>
+    <path d="M12.5 26h39"/>
+    <path d="M22 11.5v8M42 11.5v8"/>
+  </g>
+  <path d="M21 39l8 8 16.5-18" fill="none" stroke="#c46a4a" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

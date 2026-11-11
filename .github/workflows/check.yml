@@ -1,0 +1,19 @@
+name: Source checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - run: python -m venv .venv
+      - run: .venv/Scripts/python -m pip --no-cache-dir install -r requirements-lock.txt
+      - run: .venv/Scripts/python -m pytest -q
+      - run: .venv/Scripts/python tools/check_repository.py --history

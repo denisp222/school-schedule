@@ -1,0 +1,9 @@
+{
+  "school": {"name": "Демонстрационная школа", "start": "2026-09-01", "bells": ["08:30–09:10", "09:20–10:00", "10:10–10:50", "11:05–11:45", "12:05–12:45", "13:05–13:45", "13:55–14:35", "14:45–15:25"]},
+  "teachers": [{"id": "demo-teacher", "name": "Учитель 1", "subjectIds": ["demo-subject"]}],
+  "classes": [{"id": "demo-class", "name": "5а"}],
+  "subjects": [{"id": "demo-subject", "name": "Математика", "short": "Матем."}],
+  "rooms": [{"id": "demo-room", "name": "101"}],
+  "plan": [{"id": "demo-plan", "classIds": ["demo-class"], "teacherIds": ["demo-teacher"], "subjectId": "demo-subject", "roomIds": ["demo-room"], "hours": 1}],
+  "baseLessons": [{"id": "demo-lesson", "day": 1, "period": 1, "classIds": ["demo-class"], "teacherIds": ["demo-teacher"], "subjectId": "demo-subject", "roomIds": ["demo-room"], "planId": "demo-plan"}]
+}
