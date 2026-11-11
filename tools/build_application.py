@@ -6,9 +6,27 @@ import shutil
 import subprocess
 import sys
 import argparse
+from importlib import metadata
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
+
+
+def copy_notices(target):
+    """Keep upstream copyright notices with redistributed dependencies."""
+    notices=target/'third-party-notices';notices.mkdir(exist_ok=True)
+    for row in (ROOT/'requirements-lock.txt').read_text(encoding='utf-8').splitlines():
+        if not row or row.startswith('#'):continue
+        name=row.split('==')[0];distribution=metadata.distribution(name)
+        for item in distribution.files or []:
+            path=Path(str(item));label=path.name.lower()
+            if not label.startswith(('license','copying','notice')) or path.suffix.lower() not in ('','.txt','.md','.rst'):continue
+            source=Path(distribution.locate_file(item))
+            if source.is_file():
+                destination=notices/name/path.name;destination.parent.mkdir(exist_ok=True)
+                shutil.copy2(source,destination)
+    python_license=Path(sys.base_prefix)/'LICENSE.txt'
+    if python_license.exists():shutil.copy2(python_license,notices/'Python-LICENSE.txt')
 
 
 def main():
@@ -51,6 +69,7 @@ def main():
     command.append(str(ROOT/'launch.py'))
     subprocess.run(command,cwd=ROOT,check=True)
     target=release/'Расписание/_internal'
+    copy_notices(target)
     for name in ('msvcp140.dll','msvcp140_1.dll','msvcp140_2.dll','msvcp140_atomic_wait.dll',
                  'msvcp140_codecvt_ids.dll','vcruntime140.dll','vcruntime140_1.dll','concrt140.dll','vcomp140.dll'):
         source=Path(os.environ['SystemRoot'])/'System32'/name
