@@ -128,7 +128,7 @@ def repair_problems(state, result):
             errors.append('Классный час нельзя отменить автоматически.')
         old_errors={(i['code'],tuple(i['lessonIds'])) for i in issues(state,before,key) if i['level']=='error'}
         errors.extend(i['message'] for i in issues(state,after,key) if (i['code']!='gap' or not allow_gaps) and (i['code']=='pair_incomplete' or
-                      i['level']=='error' and (i['code'] in ('absence','unavailable','collision','pair_separated','first_period','rov_day','external_busy') or (i['code'],tuple(i['lessonIds'])) not in old_errors)))
+                      i['level']=='error' and (i['code'] in ('absence','unavailable','subject_unavailable','class_hour_room','collision','pair_separated','first_period','rov_day','external_busy') or (i['code'],tuple(i['lessonIds'])) not in old_errors)))
         for r in state['classes']:
             for group in (0,1):
                 periods=[l['period'] for l in after if r['id'] in l['classIds'] and group in groups_for(l,r['id'])]

@@ -82,6 +82,11 @@ def leader_room(state,teacher_id):
     return next(iter(rooms)) if len(rooms)==1 else ''
 
 
+def required_room(state,lesson):
+    meta=lesson.get('classHour')
+    return (meta.get('roomId') or leader_room(state,meta['teacherId'])) if meta else ''
+
+
 def sync_labels(state):
     leaders=leader_map(state)
     for teacher in state['teachers']:

@@ -109,6 +109,20 @@ def test_unknown_leader_room_requires_explicit_assignment():
         class_hours.create(state,DAY,'one',period=2)
 
 
+def test_legacy_class_hour_is_recalculated_in_its_leaders_room():
+    from app.repair_constraints import solve_day
+    from app.engine import repair_problems
+    state=school();class_hours.apply(state,DAY,[{'type':'class_hour','classId':'one'}])
+    event=next(l for l in state['days'][DAY] if l.get('classHour'))
+    event['classHour'].pop('roomId');event['roomIds']=['r2']
+    result=solve_day(state,DAY,allow_room_changes=True)
+    assert result
+    repaired=next(l for l in result['after'] if l.get('classHour'))
+    assert repaired['roomIds']==['r1'] and not repair_problems(state,result)
+    bad=deepcopy(result);next(l for l in bad['after'] if l.get('classHour'))['roomIds']=['r2']
+    assert any('кабинете классного руководителя' in text for text in repair_problems(state,bad))
+
+
 def test_full_copy_moves_templates_roles_history_and_encrypted_key(client,tmp_path,monkeypatch):
     key='sk-'+'artificial-example-key-1234567890'
     def protect(value,*,decrypt=False):return value.removeprefix('OLD:') if decrypt else 'NEW:'+value

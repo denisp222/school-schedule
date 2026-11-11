@@ -754,6 +754,10 @@ def slot_feasible(state,lesson,weekday,period,*,date=None,index=None,check_rooms
         absent=(tid,period) in absence_slots if absence_slots is not None else date is not None and is_absent(state,tid,date,period)
         if not record or tid in extra_absent or absent or unavailable(record,weekday,period) or teacher_busy(state,tid,key,period):return False
     if check_rooms:
+        if lesson.get('classHour'):
+            from .class_hours import required_room
+            expected_room=required_room(state,lesson)
+            if not expected_room or lesson['roomIds']!=[expected_room]:return False
         for rid in lesson.get('roomIds',[]):
             record=ix['rooms'].get(rid)
             if not record or unavailable(record,weekday,period) or room_busy(state,rid,key,period):return False
@@ -798,6 +802,11 @@ def issues(state: dict, lessons: list[dict], day=None, *, gaps: bool = True) -> 
             add('error','subject_unavailable',f"{subject['name']}: предмет запрещён на этом уроке.",[lesson['id']])
         from .class_hours import problems as class_hour_problems
         for text in class_hour_problems(state,lesson,day):add('error','class_hour',text,[lesson['id']])
+        if lesson.get('classHour'):
+            from .class_hours import required_room
+            expected_room=required_room(state,lesson)
+            if not expected_room:add('error','class_hour_room','Укажите кабинет классного руководителя в разделе «Ограничения».',[lesson['id']])
+            elif lesson['roomIds']!=[expected_room]:add('error','class_hour_room','Классный час должен проходить в кабинете классного руководителя.',[lesson['id']])
         if not period_allowed(state,lesson,date=day):
             add('error','forbidden_period','Восьмой урок отображается только для справки. Ставить на него занятия запрещено.',[lesson['id']])
         if lesson.get('joint'):

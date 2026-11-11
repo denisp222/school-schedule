@@ -9,7 +9,7 @@ from .day_preferences import profiles,score as pupil_score,add_costs,quality_key
 from .model import slot_feasible
 from .search_policy import configure
 from .model import changed_assignments
-from .class_hours import cancelled_for_absence
+from .class_hours import cancelled_for_absence,required_room
 
 
 def _seed_solution(model,response):
@@ -79,7 +79,8 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
     original_room_use={(r,l['period']) for l in before for r in l['roomIds'] if not any(t in teacher_ids or is_absent(state,t,day,l['period']) or unavailable(ix['teachers'][t],weekday,l['period']) or teacher_busy(state,t,day,l['period']) for t in l['teacherIds'])}
     unit_counts={};has_capacity=any(r.get('capacity') for r in state['rooms'])
     def rooms_for(unit,p,locked):
-        fixed_room=unit.get('classHour',{}).get('roomId')
+        fixed_room=required_room(state,unit)
+        if unit.get('classHour') and not fixed_room:return []
         current=(fixed_room,) if fixed_room else tuple(unit['roomIds'])
         if allow_room_changes=='relaxed':return [current]
         count=unit_counts[id(unit)]
@@ -87,7 +88,7 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
             room=ix['rooms'][r]
             return not unavailable(room,weekday,p) and not room_busy(state,r,day,p) and (unit.get('classHour') or not room.get('subjectIds') or unit['subjectId'] in room['subjectIds']) and (not room.get('capacity') or count is None or count<=room['capacity'])
         options=[current] if all(suitable(r) for r in current) else []
-        if locked or unit.get('classHour',{}).get('roomId') or len(current)>1 or not allow_room_changes:return options
+        if locked or fixed_room or len(current)>1 or not allow_room_changes:return options
         # Include rooms freed by other moves, not only rooms free in the base.
         free=[(r['id'],) for r in sorted(state['rooms'],key=lambda r:r['id']) if suitable(r['id']) and (r['id'],)!=current]
         return options+free
