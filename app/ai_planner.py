@@ -76,6 +76,11 @@ class ClassHour(StrictModel):
     type: Literal['class_hour']
     classId: str
     lessonId: str | None = None
+    replaceLessonId: Annotated[str,Field(min_length=1)] | None = None
+
+
+class AllowClassGaps(StrictModel):
+    type: Literal['allow_class_gaps']
 
 
 class GroupDay(StrictModel):
@@ -111,7 +116,7 @@ class AllowTechnology(StrictModel):
     classIds: list[str] = Field(max_length=40)
 
 
-Action = Annotated[Absence | ClassDay | Pin | Room | Cancel | Join | Eighth | ClassHour | GroupDay | JoinTechnology | AllowTechnology, Field(discriminator='type')]
+Action = Annotated[Absence | ClassDay | Pin | Room | Cancel | Join | Eighth | ClassHour | GroupDay | JoinTechnology | AllowTechnology | AllowClassGaps, Field(discriminator='type')]
 
 
 class Interpretation(StrictModel):
@@ -139,7 +144,10 @@ SYSTEM = '''Ты помощник завуча. Ты ТОЛЬКО перевод
 Если пользователь допускает другой класс без указания, предложи подходящий существующий урок того же предмета у доступного учителя, объясни выбор в reply. Если подходящих занятий нет, задай вопрос. Не назначай постороннего учителя.
 При выборе второго класса предпочитай ту же параллель: например, 9е с 9г или 9д. Разный возраст не выбирай без необходимости; если подходит только другой возраст, уточни это у пользователя.
 «Разговоры о важном», включая совместные, разрешены ТОЛЬКО первым уроком понедельника. Исключений по времени нет.
-{"type":"class_hour","classId":"id","lessonId":null} назначить КЛАССНЫЙ ЧАС (Кл/ч) первым уроком выбранной даты у классного руководителя из classLeaders. Применяется только по явной просьбе пользователя, отдельно для каждого указанного класса. Для всех классов сформируй отдельное действие каждому.
+{"type":"class_hour","classId":"id","lessonId":null,"replaceLessonId":null} назначить КЛАССНЫЙ ЧАС (Кл/ч) первым уроком выбранной даты у классного руководителя из classLeaders. Применяется только по явной просьбе пользователя, отдельно для каждого указанного класса. Для всех классов сформируй отдельное действие каждому.
+Если пользователь просит заменить КОНКРЕТНЫЙ урок, например физкультуру 8г с любого номера, классным часом первым уроком, укажи ID физкультуры в replaceLessonId. Программа уберёт именно этот урок и поставит Кл/ч первым; прежний первый предмет останется и будет переставлен. Не создавай для этого pin_lesson или cancel_lesson: это ОДНО действие class_hour. Совмещай его с отсутствиями учителей и классными часами остальных классов в одном ответе, это поддерживается.
+Если классный руководитель отсутствует, его Кл/ч отменяется с пояснением, остальные условия сохраняются. Это не unsupported.
+{"type":"allow_class_gaps"} — резервное разрешение окон в выбранный день. Не добавляй его самостоятельно: программа сначала ищет без окон и только при неудаче показывает резервный вариант с предупреждением. Ранее сохранённое разрешение можно повторить.
 Обычный первый урок заменяется классным часом только на эту дату. Учебный план и базовая неделя не меняются. Спаренный первый урок не отменяется наполовину: блок сохраняется для перестановки целиком. Если просят переименовать конкретный подходящий урок, укажи его lessonId: это разрешено только для первого урока целого класса у его классного руководителя. Если руководитель неизвестен, попроси заполнить карточку класса. Если выбраны два класса ОДНОГО классного руководителя, они автоматически проводят ОДИН совместный классный час: у учителя нет двух отдельных занятий одновременно. Классы разных руководителей так не объединяются.
 Если пользователь прямо просит пропустить/отменить «Разговоры о важном», используй cancel_lesson для этого урока, не переноси его позже.
 Если класс начинает со второго и учитель РОВ отсутствует, этот урок отменится, а не переместится на другой номер.
@@ -163,8 +171,8 @@ verifiedJointRequests — совместные занятия, прямо зап
 изменение недельной нагрузки, переносы на другой день, произвольные пожелания или ослабление правил.
 Спаренные уроки по учебному плану, в том числе два урока труда, должны идти ПОДРЯД у каждой подгруппы. Нельзя разделять пару другими предметами или сохранять только её половину.
 Требования «труд парой/подряд», «не разрывать спаренные уроки» и «РОВ только первым в понедельник» — уже действующие правила школы, а не изменение общих правил. Подтверди их учёт в reply, НЕ добавляй в unsupported и не выдумывай для них action. Остальные условия просьбы переведи в обычные actions.
-У каждой подгруппы учеников окна строго запрещены. Окна у учителей разрешены и НЕ учитываются при выборе: важнее сохранить уроки и сделать меньше перестановок.
-Алгоритм мягко предпочитает начало первым уроком и привычное окончание дня по базовой неделе, особенно у младших классов. Не превращай это в обязательное class_day: пользователь может явно попросить прийти позже. Семь уроков вместо привычных шести допустимы при необходимости; восьмой по-прежнему только по отдельному исключению.
+Сначала программа ищет без окон у каждой подгруппы. Если такой вариант не найден, покажет отдельный резервный вариант с явными окнами и предупреждением перед сохранением. Отсутствия, пересечения и безопасность при этом не ослабляются. Окна у учителей разрешены и НЕ учитываются при выборе.
+После сохранения часов алгоритм в первую очередь избегает лишнего седьмого урока у 5–6 классов, даже если для этого нужно больше перестановок. Затем сокращает перестановки и предпочитает начало первым уроком. Не превращай это в обязательное class_day: пользователь может явно попросить прийти позже. Семь уроков вместо привычных шести допустимы при необходимости; восьмой по-прежнему только по отдельному исключению.
 Пожелания «стараться к первому» и «по возможности не ставить седьмой младшим» уже учитываются: подтверди это в reply без unsupported и без нового action. Точное требование «должны прийти ко второму» остаётся class_day.
 Сохраняются собственные учителя, кроме явно согласованных совместных занятий,
 РОВ только первым уроком понедельника. На восьмой нельзя, кроме закреплённого исключения четверга или явного allow_eighth на дату.
@@ -371,7 +379,25 @@ def messages_for(state, day, message, history, *, full_context=False):
     return messages
 
 
+def compose_class_hour_steps(raw,state,day,request_text):
+    if not isinstance(raw,dict) or not isinstance(raw.get('actions'),list):return raw
+    if any(not isinstance(row,dict) for row in raw['actions']):return raw
+    if not re.search(r'классн\w*\s+час|кл\s*/\s*ч',request_text.lower()):return raw
+    if re.search(r'не\s+(?:отмен|убир|замен)',request_text.lower()):return raw
+    result=deepcopy(raw);lessons={l['id']:l for l in lessons_for_day(state,day)}
+    consumed=set()
+    for row in result['actions']:
+        if row.get('type')!='class_hour' or row.get('lessonId') or row.get('replaceLessonId'):continue
+        pins=[p for p in result['actions'] if p.get('type')=='pin_lesson' and p.get('period')==1
+              and lessons.get(p.get('lessonId'),{}).get('classIds')==[row.get('classId')]]
+        if len(pins)==1:
+            row['replaceLessonId']=pins[0]['lessonId'];consumed.add(pins[0]['lessonId'])
+    result['actions']=[r for r in result['actions'] if not (r.get('type')=='pin_lesson' and r.get('lessonId') in consumed)]
+    return result
+
+
 def validate_interpretation(raw, state, day, request_text=''):
+    raw=compose_class_hour_steps(raw,state,day,request_text)
     try:
         parsed = Interpretation.model_validate(raw)
     except ValidationError:
@@ -394,6 +420,7 @@ def validate_interpretation(raw, state, day, request_text=''):
     sources=dict(lessons)
     for lesson in lessons.values():
         for source in lesson.get('joint',{}).get('sources',[]):sources[source['id']]=source
+        for source in lesson.get('classHour',{}).get('sources',[]):sources[source['id']]=source
     permits={a.lessonId for a in parsed.actions if isinstance(a,Eighth)}
     existing_permits={r['lessonId'] for r in state.get('assistantConditions',{}).get(day,[]) if r['type']=='allow_eighth'}
     if permits-existing_permits and not re.search(r'восьм|(?<!\d)8\s*(?:-?[ймго]+\s*)?урок',request_text.lower()):
@@ -410,11 +437,22 @@ def validate_interpretation(raw, state, day, request_text=''):
             raise AssistantError('В условии перепутаны первый и последний уроки. Уточните просьбу.')
         if isinstance(action,ClassHour):
             from .class_hours import create
-            if row not in state.get('assistantConditions',{}).get(day,[]) and not re.search(r'классн\w*\s+час|кл\s*/\s*ч',request_text.lower()):
+            if action.replaceLessonId and (action.replaceLessonId not in sources or action.classId not in sources[action.replaceLessonId]['classIds']):
+                raise AssistantError('Заменяемый урок этого класса не найден. Проверьте предмет и дату.')
+            saved=any({k:v for k,v in r.items() if v is not None}=={k:v for k,v in row.items() if v is not None}
+                      for r in state.get('assistantConditions',{}).get(day,[]))
+            if not saved and not re.search(r'классн\w*\s+час|кл\s*/\s*ч',request_text.lower()):
                 raise AssistantError('Классный час назначается только по вашей явной просьбе.')
-            try:event=create(state,day,action.classId,action.lessonId)
+            try:event=create(state,day,action.classId,action.lessonId,action.replaceLessonId)
             except ValueError as error:raise AssistantError(str(error)) from None
             labels.append(ix['classes'][action.classId]['name']+': Кл/ч первым уроком, '+ix['teachers'][event['teacherIds'][0]]['name'])
+            if action.replaceLessonId:
+                source=sources[action.replaceLessonId]
+                labels[-1]+='; вместо '+ix['subjects'][source['subjectId']]['name']+' ('+str(source['period'])+'-й урок)'
+        elif isinstance(action,AllowClassGaps):
+            if row not in state.get('assistantConditions',{}).get(day,[]):
+                raise AssistantError('Резервные варианты с окнами программа подбирает после проверки вариантов без окон.')
+            labels.append('Окна допускаются только в резервном варианте с предупреждением')
         elif isinstance(action,(JoinTechnology,AllowTechnology)):
             if action.teacherId not in ix['teachers']:
                 raise AssistantError('Преподаватель технологии не найден.')
@@ -595,11 +633,18 @@ def condition_problems(state, day, actions, result):
     checked['days'][day] = deepcopy(lessons_for_day(state, day))
     errors = repair_problems(checked, result)
     after = result['after']
+    if any(r['type']=='class_hour' and r.get('replaceLessonId') for r in actions):
+        from .class_hours import cancelled_for_absence
+        for expected in {l['id']:l for l in expected_hours.values()}.values():
+            if not any(l['id']==expected['id'] and l.get('classHour')==expected['classHour'] for l in after) and not cancelled_for_absence(checked,expected,day):
+                errors.append('При замене урока нужно сохранить классный час остальных классов.')
     for row in actions:
         if row['type']=='class_hour':
             from .class_hours import create,problems
             expected=expected_hours[row['classId']]
             matches=[l for l in after if l['id']==expected['id']]
+            from .class_hours import cancelled_for_absence
+            if not matches and cancelled_for_absence(checked,expected,day):continue
             if len(matches)!=1 or matches[0].get('classHour')!=expected['classHour'] or problems(checked,matches[0],day):
                 errors.append('Не выполнено назначение классного часа у классного руководителя первым уроком.')
         if row['type'] in ('class_day','group_day'):
@@ -661,10 +706,18 @@ def _variants(state, day, actions, limit=3):
         result['stats']['moved']=changed_assignments(before,result['after'])
         result['stats']['classHours']=sum(bool(l.get('classHour')) for l in result['after'])
         result['stats']['classHourClasses']=sum(len(l['classIds']) for l in result['after'] if l.get('classHour'))
+        cancelled_hours=[l for l in result['cancelled'] if l.get('classHour')]
+        result['stats']['classHoursCancelled']=sum(len(l['classIds']) for l in cancelled_hours)
+        for lesson in cancelled_hours:
+            names={c['id']:c['name'] for c in state['classes']}
+            warning='Классный час '+', '.join(names[c] for c in lesson['classIds'])+' отменён: классный руководитель недоступен первым уроком.'
+            if warning not in result['warnings']:result['warnings'].append(warning)
         if any(l.get('classHour') and len(l['classIds'])>1 for l in result['after']):
             result['search']={**result.get('search',{}),'primaryProven':False}
-        from .day_preferences import score as pupil_score
+        from .day_preferences import score as pupil_score,late_count,gap_details
         result['stats']['studentPreference']=pupil_score(state,result['after'],parse_date(day).weekday(),actions)
+        result['stats']['youngerLate']=late_count(state,result['after'],parse_date(day).weekday(),actions)
+        result['stats']['classGapDetails']=gap_details(state,result['after'])
         result['stats']['joined']=sum(bool(l.get('joint') or l.get('technologyJoint')) and not any(b['id']==l['id'] and b.get('joint')==l.get('joint') and b.get('technologyJoint')==l.get('technologyJoint') for b in before) for l in result['after'])
         result['status'] = 'ok' if result['changes'] else 'unchanged'
         if condition_problems(state, day, actions, result):
@@ -679,7 +732,7 @@ def _variants(state, day, actions, limit=3):
     # three candidates. Candidate count must never stop quality improvement.
     for index in range(4):
         accept(repair_day(work,day,variant=index,fast_only=True))
-    if any(r['stats']['lostHours']==0 and r['stats']['moved']==0 for r in found):
+    if any(all(r['stats'].get(k,0)==0 for k in ('lostHours','moved','youngerLate','classGapsAfter')) for r in found):
         best=min(found,key=lambda r:(quality_key(r['stats']),_schedule_key(r)))
         best['search']={'deterministic':True,'primaryProven':True,'scope':'all-rooms','certificate':'zero-changes'}
         return [best]
@@ -687,21 +740,21 @@ def _variants(state, day, actions, limit=3):
     primary_bound=None;main_final_bound=None;proof=None
     if main:
         if main.get('search',{}).get('primaryProven') and main['search']['scope']=='all-rooms':
-            primary_bound=(main['stats']['lostHours'],main['stats']['moved'])
+            primary_bound=quality_key(main['stats'])[:4]
         accept(main)
         if primary_bound is not None:
-            main_final_bound=(main['stats']['lostHours'],main['stats']['moved'])
+            main_final_bound=quality_key(main['stats'])[:4]
             proof=deepcopy(main['search'])
     for index in range(1,limit):
         ordered=sorted(found,key=lambda r:(quality_key(r['stats']),_schedule_key(r)))
-        if main_final_bound and sum((r['stats']['lostHours'],r['stats']['moved'])==main_final_bound for r in ordered)>=limit:break
+        if main_final_bound and sum(quality_key(r['stats'])[:4]==main_final_bound for r in ordered)>=limit:break
         result=solve_day(work,day,variant=index,baseline=before,hint=ordered[0]['after'] if ordered else None,
                          excluded=[r['after'] for r in ordered],conditions=actions,_primary_bound=primary_bound)
         if result is None:break
         accept(result)
     if main_final_bound is not None:
         for result in found:
-            primary=(result['stats']['lostHours'],result['stats']['moved'])
+            primary=quality_key(result['stats'])[:4]
             if primary==main_final_bound:result['search']=deepcopy(proof)
             if primary<main_final_bound:
                 # An independently valid candidate takes precedence over an
@@ -714,7 +767,14 @@ def variants(state,day,actions):
     key=search_fingerprint(state,day,actions)
     cached=_variant_cache.get(key)
     if cached is not None and all(not condition_problems(state,day,row.get('actions',actions),row) for row in cached):return cached
-    results=_calculate_variants(state,day,actions)
+    strict=[r for r in actions if r['type']!='allow_class_gaps']
+    results=_calculate_variants(state,day,strict)
+    if not results:
+        fallback=strict+[{'type':'allow_class_gaps'}]
+        results=_calculate_variants(state,day,fallback)
+        for result in results:
+            result['warnings'].insert(0,'Резервный вариант: по всем условиям без окон решение не найдено. Проверьте выделенные окна перед сохранением.')
+            result['title']='Резервный вариант с окнами'
     if results:_variant_cache[key]=results
     return results
 
@@ -755,6 +815,7 @@ def commit(state, day, actions, result):
                                      'first': row['first'], 'last': row['last'], 'reason': 'Условия помощника'})
     state.setdefault('assistantConditions',{})[day]=deepcopy(actions)
     apply_repair(state,deepcopy(result),'Перестановки по условиям помощника')
+    state.setdefault('dayNotices',{})[day]=[text for text in result.get('warnings',[]) if text.startswith('Классный час')]
     # Pins and date-specific conditions stay visible and can be used again.
     state.setdefault('assistantConditions', {})[day] = deepcopy(actions)
     if day not in state['days']:

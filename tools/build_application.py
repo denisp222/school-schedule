@@ -61,7 +61,7 @@ def main():
                 if destination.is_dir():shutil.copy2(source,destination/name)
     (ROOT/'build/latest.txt').write_text(str(target.parent),encoding='utf-8')
     (target.parent/'build-profile.json').write_text(__import__('json').dumps({
-        'public':not args.private_school,'voice':args.with_voice}),encoding='utf-8')
+        'public':not args.private_school,'voice':args.with_voice,'version':VERSION}),encoding='utf-8')
 
 
 if __name__=='__main__':main()

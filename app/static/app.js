@@ -539,6 +539,8 @@ function lessonCellSingle(row, period, current, base, red) {
     ? `${namesOf('classes', lesson.classIds)} · ${subjectName(lesson.subjectId)} · ${namesOf('teachers', lesson.teacherIds)}${room ? ` · каб. ${room}` : ''}`
     : red ? (relocated?'Занятие перенесено':'Занятие отменено') : 'Нет занятия';
   const attrs=`${S.preview?'data-preview-cell="true"':'data-action="lesson"'} draggable="${lesson && !S.preview?'true':'false'}" data-row-kind="${S.view}" data-row="${row.id}" data-period="${period}" data-date="${S.date}" data-lesson="${lesson?.id || ''}" title="${esc(title)}"`;
+  const pupilGap=!lesson && S.view==='classes' && (shown.classGapDetails || []).some(item=>item.classId===row.id && item.periods.includes(period));
+  if(pupilGap)return `<button type="button" class="cell pupil-gap" ${attrs} aria-label="${esc(row.name)}, ${period} урок: окно"><span class="subj">Окно</span><span class="meta">Проверьте вариант</span></button>`;
   if (absent.length && !red) {
     return `<button type="button" class="cell absent-cell" ${attrs} aria-label="${esc(row.name)}, ${period} урок: учитель отсутствует"><span class="flag">отсутствие</span>${lesson?cellContent(S.view,lesson,room)+lessonGroupLabel(lesson,row):''}<span class="absence-label">${lesson?'Урок требует перестановки':'Учитель отсутствует'}</span></button>`;
   }
@@ -622,6 +624,7 @@ function renderDay() {
     <div class="page">
       ${pageHead('Рабочий день', fmtLongCap(S.date), sub, actions)}
       ${S.preview?schedulePreviewBar():dateStrip()}
+      ${!S.preview?(S.day.notices || []).map(text=>notice(text,'warn')).join(''):''}
       ${absenceStrip}
       <div class="toolbar">
         <div class="toolbar-left">

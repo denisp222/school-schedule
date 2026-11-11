@@ -47,7 +47,7 @@ from .search_policy import canonical_state
 from .model import changed_assignments
 from .commitments import teacher_busy,room_busy
 from .technology import groups_for,student_count
-from .day_preferences import profiles,score as pupil_score,MOVE_COST
+from .day_preferences import profiles,score as pupil_score,MOVE_COST,late_count
 
 MAX_SCORE = 10 ** 9
 _exact_cache = PreviewStore(limit=40, ttl=600)
@@ -59,10 +59,15 @@ def repair_problems(state, result):
     if 'after' not in result:return errors
     if any(not period_allowed(state,l,date=result['date']) for l in result['after']):errors.append('Восьмой урок требует явного исключения на эту дату.')
     changed={result['date']:result['after'], **result.get('otherDays',{})}
+    allow_gaps=any(r['type']=='allow_class_gaps' for r in state.get('assistantConditions',{}).get(result['date'],[]))
     week={d:lessons_for_day(state,d) for d in week_dates(parse_date(result['date']))}
     original_week=[l for rows in week.values() for l in rows]
     actual_week=[l for d,rows in week.items() for l in changed.get(d,rows)]
     originals={l['id']:l for l in original_week}
+    revised_classes={r['classId'] for r in state.get('assistantConditions',{}).get(result['date'],[])
+                     if r['type']=='class_hour' and r.get('replaceLessonId')}
+    restored_sources={s['id']:s for old in original_week if old.get('classHour') and revised_classes.intersection(old['classIds'])
+                      for s in old['classHour']['sources']}
     from .joint_lessons import problems as joint_problems,source_ids
     from .technology import problems as technology_problems,authorized as technology_authorized,source_refs
     group_consumers=defaultdict(set)
@@ -73,6 +78,8 @@ def repair_problems(state, result):
         for ref in refs:group_consumers[ref['lessonId'],ref['groupIndex']].add(other['id'])
     for lesson in actual_week:
         source=originals.get(lesson['id']) or originals.get(lesson.get('splitFrom'))
+        if not lesson.get('classHour') and (source is None or source.get('classHour')) and lesson['id'] in restored_sources:
+            source=restored_sources[lesson['id']]
         if source and source.get('joint') and not lesson.get('joint'):
             # A new approved pairing can return the former host to its own
             # class; the other source then participates in the new pairing.
@@ -115,15 +122,17 @@ def repair_problems(state, result):
     for key, after in changed.items():
         before=lessons_for_day(state,key)
         explicit_cancel={r['lessonId'] for r in state.get('assistantConditions',{}).get(key,[]) if r['type']=='cancel_lesson'}
-        if any(l.get('classHour') and l['id'] not in explicit_cancel and not any(a['id']==l['id'] for a in after) for l in before):
+        from .class_hours import cancelled_for_absence
+        if any(l.get('classHour') and l['id'] not in explicit_cancel and not revised_classes.intersection(l['classIds']) and not cancelled_for_absence(state,l,key)
+               and not any(a['id']==l['id'] for a in after) for l in before):
             errors.append('Классный час нельзя отменить автоматически.')
         old_errors={(i['code'],tuple(i['lessonIds'])) for i in issues(state,before,key) if i['level']=='error'}
-        errors.extend(i['message'] for i in issues(state,after,key) if i['code']=='pair_incomplete' or
-                      i['level']=='error' and (i['code'] in ('absence','unavailable','collision','pair_separated','first_period','rov_day','external_busy') or (i['code'],tuple(i['lessonIds'])) not in old_errors))
+        errors.extend(i['message'] for i in issues(state,after,key) if (i['code']!='gap' or not allow_gaps) and (i['code']=='pair_incomplete' or
+                      i['level']=='error' and (i['code'] in ('absence','unavailable','collision','pair_separated','first_period','rov_day','external_busy') or (i['code'],tuple(i['lessonIds'])) not in old_errors)))
         for r in state['classes']:
             for group in (0,1):
                 periods=[l['period'] for l in after if r['id'] in l['classIds'] and group in groups_for(l,r['id'])]
-                if gap_slots(periods):errors.append(r['name']+': появились окна у группы.')
+                if gap_slots(periods) and not allow_gaps:errors.append(r['name']+': появились окна у группы.')
         for teacher in state['teachers']:
             tid=teacher['id']
             actual=[l for l in actual_week if tid in l['teacherIds'] and not l.get('classHour')]
@@ -141,6 +150,7 @@ def repair_day(state, day, **kwargs):
     if result.get('after') is not None:
         result['stats']['moved']=changed_assignments(result['before'],result['after'])
         result['stats']['studentPreference']=pupil_score(state,result['after'],parse_date(result['date']).weekday(),state.get('assistantConditions',{}).get(result['date'],[]))
+        result['stats']['youngerLate']=late_count(state,result['after'],parse_date(result['date']).weekday(),state.get('assistantConditions',{}).get(result['date'],[]))
     problems=repair_problems(state,result)
     if problems and fast_only:
         result['status']='infeasible'

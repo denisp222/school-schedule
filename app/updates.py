@@ -191,8 +191,19 @@ $folder = {ps_quote(folder)}
 Wait-Process -Id {int(pid)} -ErrorAction SilentlyContinue
 if ((Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant() -ne {ps_quote(expected_hash)}) {{ exit 2 }}
 $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS', '/UPDATE=1', ('/DIR="' + $folder + '"'))
-$process = Start-Process -FilePath $setup -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
-if ($process.ExitCode -eq 0) {{ Start-Process -FilePath (Join-Path $folder 'Расписание.exe') -WorkingDirectory $folder }}
+$start = New-Object System.Diagnostics.ProcessStartInfo
+$start.FileName = $setup
+$start.Arguments = $arguments -join ' '
+$start.WorkingDirectory = $folder
+$start.UseShellExecute = $false
+$start.CreateNoWindow = $true
+$process = [System.Diagnostics.Process]::Start($start)
+$process.WaitForExit()
+if ($process.ExitCode -eq 0) {{
+  $start.FileName = Join-Path $folder 'Расписание.exe'
+  $start.Arguments = ''
+  [System.Diagnostics.Process]::Start($start) | Out-Null
+}}
 else {{ Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('Не удалось установить обновление. Откройте приложение обычным ярлыком. Расписание сохранено.', 'Расписание') | Out-Null }}
 """
 

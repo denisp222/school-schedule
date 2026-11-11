@@ -29,7 +29,7 @@ def school():
           lesson('b3',2,3,'two','a',room='r2')]})
 
 
-def action(cid='one',lesson=None):return {'type':'class_hour','classId':cid,'lessonId':lesson}
+def action(cid='one',lesson=None):return {'type':'class_hour','classId':cid,'lessonId':lesson,'replaceLessonId':None}
 
 
 def raw(actions):return {'date':DAY,'reply':'Классный час','questions':[],'unsupported':[],'actions':actions}
@@ -130,7 +130,12 @@ def test_date_time_and_teacher_tampering_are_rejected():
 
 def test_absent_class_leader_never_causes_automatic_substitution_or_silent_cancellation():
     actions=[action(),{'type':'teacher_absence','teacherId':'a','first':1,'last':8}]
-    assert not ai_planner.variants(school(),DAY,actions)
+    results=ai_planner.variants(school(),DAY,actions)
+    assert results
+    for row in results:
+        assert not any('a' in l['teacherIds'] for l in row['after'])
+        assert row['stats']['classHoursCancelled']==1
+        assert any('Классный час' in warning and 'отменён' in warning for warning in row['warnings'])
 
 
 def test_technology_pair_is_kept_and_shifted_as_a_whole():

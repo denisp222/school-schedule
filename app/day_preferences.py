@@ -8,7 +8,30 @@ MOVE_COST=20
 
 def quality_key(stats):
     moved=int(stats.get('moved',0));preference=int(stats.get('studentPreference',0))
-    return (int(stats.get('lostHours',stats.get('cancelled',0))),moved,preference)
+    return (int(stats.get('classGapsAfter',0)),int(stats.get('lostHours',stats.get('cancelled',0))),
+            int(stats.get('youngerLate',0)),moved,preference)
+
+
+def late_count(state,lessons,weekday,conditions=()):
+    policy=profiles(state,weekday,conditions)
+    occupied=defaultdict(set)
+    for lesson in lessons:
+        for cid in lesson['classIds']:
+            for group in student_groups(lesson,cid):occupied[cid,group].add(lesson['period'])
+    return sum(sum(p>normal for p in occupied[key]) for key,(_,normal,weight) in policy.items() if weight==3)
+
+
+def gap_details(state,lessons):
+    from .model import gap_slots
+    result=[]
+    for cls in state['classes']:
+        seen=set()
+        for group in (0,1):
+            holes=tuple(gap_slots([l['period'] for l in lessons if cls['id'] in l['classIds'] and group in student_groups(l,cls['id'])]))
+            if holes and holes not in seen:
+                seen.add(holes)
+                result.append({'classId':cls['id'],'className':cls['name'],'groupIndex':group,'periods':list(holes)})
+    return result
 
 
 def profiles(state,weekday,conditions=()):

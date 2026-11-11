@@ -5,10 +5,11 @@ from time import perf_counter
 from .model import lessons_for_day, indexes, is_absent, unavailable, gap_slots, must_be_first, diff_lessons, parse_date,period_allowed,eighth_exception,paired_subjects
 from .commitments import teacher_busy,room_busy
 from .technology import groups_for,student_count
-from .day_preferences import profiles,score as pupil_score,add_costs,quality_key,MOVE_COST
+from .day_preferences import profiles,score as pupil_score,add_costs,quality_key,MOVE_COST,late_count
 from .model import slot_feasible
 from .search_policy import configure
 from .model import changed_assignments
+from .class_hours import cancelled_for_absence
 
 
 def _seed_solution(model,response):
@@ -23,10 +24,10 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
         args=dict(state=state,day=day,variant=variant,teacher_ids=teacher_ids,baseline=baseline,excluded=excluded,conditions=conditions)
         def certificate(result,bound):
             result['search'].update(primaryProven=True,scope='all-rooms',certificate='room-relaxation',
-                                    lowerBoundLostHours=bound['lostHours'],lowerBoundMoved=bound['moved'])
+                                    lowerBoundLostHours=bound['lostHours'],lowerBoundYoungerLate=bound.get('youngerLate',0),lowerBoundMoved=bound['moved'])
             return result
         def reaches(result,bound):
-            return result is not None and bound is not None and bound['primaryProven'] and (result['stats']['lostHours'],result['stats']['moved'])==(bound['lostHours'],bound['moved'])
+            return result is not None and bound is not None and bound['primaryProven'] and (result['stats']['classGapsAfter'],result['stats']['lostHours'],result['stats'].get('youngerLate',0),result['stats']['moved'])==(bound.get('classGapsAfter',0),bound['lostHours'],bound.get('youngerLate',0),bound['moved'])
         bound=None;projected=None;bound_searched=False
         # Solve the smaller time-only problem first. Matching its lower bound
         # with real rooms proves a global minimum without a huge joint search.
@@ -38,10 +39,10 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
         fixed=solve_day(**args,hint=projected['after'] if projected else hint,allow_room_changes=False,_seconds=1.2,_incumbent=projected)
         if projected and (fixed is None or quality_key(projected['stats'])<quality_key(fixed['stats'])):fixed=projected
         if fixed and _primary_bound is not None:
-            if (fixed['stats']['lostHours'],fixed['stats']['moved'])==tuple(_primary_bound):
+            if (fixed['stats']['classGapsAfter'],fixed['stats']['lostHours'],fixed['stats'].get('youngerLate',0),fixed['stats']['moved'])==tuple(_primary_bound):
                 fixed['search'].update(primaryProven=True,scope='all-rooms',inheritedBound=True)
             return fixed
-        if fixed and fixed['stats']['lostHours']==0 and fixed['stats']['moved']==0:
+        if fixed and all(fixed['stats'].get(k,0)==0 for k in ('lostHours','moved','youngerLate','classGapsAfter')):
             fixed['search'].update(primaryProven=True,scope='all-rooms')
             return fixed
         if not bound_searched:bound=solve_day(**args,hint=None,allow_room_changes='relaxed',_seconds=1.2)
@@ -60,6 +61,8 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
     movement_sources={l['id']:l for l in movement_before}
     weekday=parse_date(day).weekday();periods=min(8 if any(period_allowed(state,l,8,weekday,date=day) for l in before) else 7,len(state['school']['bells']))
     policy=profiles(state,weekday,conditions);preference_bound=0;comfort=[];model=cp_model.CpModel()
+    allow_gaps=any(r['type']=='allow_class_gaps' for r in conditions)
+    younger_late=[];pupil_gaps=[]
     placement_slots={(row['lessonId'],tuple(row['teacherIds'])):row['period'] for row in (_placements or [])}
     slots=defaultdict(list); choices=[]; units=[]; loss=[]; costs=[]; parent_changes=defaultdict(list)
     hinted_rows=hint if hint is not None else before
@@ -106,7 +109,8 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
             hint_period=unit_hint['period'] if unit_hint else None
             blocked=any(absent(t,old['period']) for t in unit['teacherIds'])
             pair_blocked=any((c,unit['subjectId'],t) in blocked_pairs for c in unit['classIds'] for t in unit['teacherIds'])
-            cancellation=model.new_bool_var(f'cancel{n}') if (blocked or pair_blocked) and old['id'] not in pins else None
+            cancellation=model.new_bool_var(f'cancel{n}') if ((blocked or pair_blocked) and old['id'] not in pins
+                or cancelled_for_absence(state,old,day)) else None
             if cancellation is not None:loss.append(cancellation*len(unit['teacherIds']))
             for c in unit['classIds']:
                 for g in groups_for(unit,c):original_subject[c,g,unit['subjectId']]+=1
@@ -177,6 +181,8 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
                 if kind=='teachers':continue
                 soft,upper=add_costs(model,daily,policy[record['id'],g],f"pupil_{record['id']}_{g}")
                 comfort.extend(soft);preference_bound+=upper
+                _,normal,weight=policy[record['id'],g]
+                if weight==3:younger_late.extend(v for p,v in enumerate(daily,1) if p>normal)
                 gapvars=[]
                 for p in range(1,periods-1):
                     left=model.new_bool_var('left');right=model.new_bool_var('right');hole=model.new_bool_var('hole')
@@ -185,7 +191,8 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
                     gapvars.append(hole)
                 # Students in either group may arrive later or leave earlier,
                 # but never have a hole between their own lessons.
-                model.add(sum(gapvars)==0)
+                if allow_gaps:pupil_gaps.extend(gapvars)
+                else:model.add(sum(gapvars)==0)
     limits={(c,p['subjectId']):int(p.get('maxPerDay',2)) for p in state['plan'] for c in p['classIds']}
     for (c,g,s),vs in subject_vars.items():model.add(sum(vs)<=max(limits.get((c,s),2),original_subject[c,g,s]))
     moved=[]
@@ -193,11 +200,14 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
         flag=model.new_bool_var('changed_'+parent);model.add_max_equality(flag,variables);moved.append(flag)
     # Bounded lexicographic objective: no sacrifice of a lesson hour to obtain
     # fewer changes, and no extra change to improve a teacher's free time.
-    loss_weight=len(moved)+1
-    primary=sum(loss)*loss_weight+sum(moved)
+    late_weight=len(moved)+1
+    loss_weight=(len(younger_late)+1)*late_weight
+    gap_weight=(len(units)*max((len(unit['teacherIds']) for _,unit in units),default=1)+1)*loss_weight
+    primary=sum(pupil_gaps)*gap_weight+sum(loss)*loss_weight+sum(younger_late)*late_weight+sum(moved)
     model.minimize(primary)
     if _incumbent:
-        maximum=_incumbent['stats']['lostHours']*loss_weight+_incumbent['stats']['moved']
+        maximum=(_incumbent['stats']['classGapsAfter']*gap_weight+_incumbent['stats']['lostHours']*loss_weight
+                 +_incumbent['stats'].get('youngerLate',0)*late_weight+_incumbent['stats']['moved'])
         model.add(primary<=maximum)
     for previous in excluded:
         identical=[]
@@ -243,7 +253,9 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
         for (old,unit),(options,cancellation) in zip(units,choices):
             period=next((p for v,p in options if solver.boolean_value(v)),None)
             placements.append({'lessonId':old['id'],'teacherIds':unit['teacherIds'],'period':period})
-        return {'primaryProven':primary_proven,'lostHours':solver.value(sum(loss)),'moved':solver.value(sum(moved)), 'placements':placements}
+        return {'primaryProven':primary_proven,'lostHours':solver.value(sum(loss)),
+                'classGapsAfter':solver.value(sum(pupil_gaps)),'youngerLate':solver.value(sum(younger_late)),
+                'moved':solver.value(sum(moved)), 'placements':placements}
     by_parent=defaultdict(list)
     for n,((old,unit),(options,cancellation)) in enumerate(zip(units,choices),1):
         if cancellation is not None and solver.boolean_value(cancellation):continue
@@ -276,4 +288,4 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
         else:after.extend(parts)
     after.sort(key=lambda l:(l['period'],l['id']));changes=diff_lessons(before,after)
     gaps=lambda ls,kind:sum(len(gap_slots([l['period'] for l in ls if r['id'] in l['teacherIds' if kind=='teachers' else 'classIds'] and (kind=='teachers' or g in groups_for(l,r['id']))])) for r in state[kind] for g in ([0] if kind=='teachers' else [0,1]))
-    return {'status':'ok' if changes else 'unchanged','date':day,'before':before,'after':after,'changes':changes,'cancelled':cancelled,'otherDays':{},'otherChanges':{},'groupLosses':group_losses,'warnings':([f'Отменено занятий: {len(cancelled)}.'] if cancelled else [])+([f'Отменено занятий отдельных групп: {len(group_losses)}.'] if group_losses else []),'message':'Проверены пересечения, доступность и окна.','allowOtherDays':False,'variant':variant,'title':'Перестановки без новых окон','search':search,'absentTeachers':sorted({t for t in ix['teachers'] if t in teacher_ids or any(is_absent(state,t,day,p) for p in range(1,periods+1))}),'stats':{'seconds':round(perf_counter()-started,3),'moved':changed_assignments(movement_before,after),'cancelled':len(cancelled),'groupSplits':splits,'groupLosses':len(group_losses),'lostHours':sum(len(l['teacherIds']) for l in cancelled)+len(group_losses),'teacherGapsBefore':gaps(before,'teachers'),'teacherGapsAfter':gaps(after,'teachers'),'classGapsBefore':gaps(before,'classes'),'classGapsAfter':gaps(after,'classes'),'studentPreference':pupil_score(state,after,weekday,conditions)}}
+    return {'status':'ok' if changes else 'unchanged','date':day,'before':before,'after':after,'changes':changes,'cancelled':cancelled,'otherDays':{},'otherChanges':{},'groupLosses':group_losses,'warnings':([f'Отменено занятий: {len(cancelled)}.'] if cancelled else [])+([f'Отменено занятий отдельных групп: {len(group_losses)}.'] if group_losses else []),'message':'Проверены пересечения, доступность и окна.','allowOtherDays':False,'variant':variant,'title':'Перестановки без новых окон','search':search,'absentTeachers':sorted({t for t in ix['teachers'] if t in teacher_ids or any(is_absent(state,t,day,p) for p in range(1,periods+1))}),'stats':{'seconds':round(perf_counter()-started,3),'moved':changed_assignments(movement_before,after),'cancelled':len(cancelled),'groupSplits':splits,'groupLosses':len(group_losses),'lostHours':sum(len(l['teacherIds']) for l in cancelled)+len(group_losses),'teacherGapsBefore':gaps(before,'teachers'),'teacherGapsAfter':gaps(after,'teachers'),'classGapsBefore':gaps(before,'classes'),'classGapsAfter':gaps(after,'classes'),'youngerLate':late_count(state,after,weekday,conditions),'studentPreference':pupil_score(state,after,weekday,conditions)}}

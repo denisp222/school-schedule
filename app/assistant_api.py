@@ -187,8 +187,9 @@ def class_hour_preview(body: dict):
     results=ai_planner.variants(current['state'],day,draft['actions']);snapshot(body)
     summaries=[]
     for i,result in enumerate(results):
-        token=remember(_previews,{'revision':current['revision'],'date':day,'actions':draft['actions'],'result':result})
-        work=ai_planner.prepared_state(current['state'],day,draft['actions']);work['days'][day]=deepcopy(result['after'])
+        actions=result.get('actions',draft['actions'])
+        token=remember(_previews,{'revision':current['revision'],'date':day,'actions':actions,'result':result})
+        work=ai_planner.prepared_state(current['state'],day,actions);work['days'][day]=deepcopy(result['after'])
         payload=server._day_payload(work,day);payload.update(base=deepcopy(result['before']),changes=result['changes'])
         summaries.append({**server._repair_summary(result),'day':payload,'previewId':token,'id':i})
     return {'date':day,'revision':current['revision'],'variants':summaries,

@@ -28,7 +28,7 @@ def check(staged=False):
         name = raw.decode('utf-8');path = Path(name)
         public_icon=name in {'app/static/favicon.ico',*[f'app/static/icon-{size}.png' for size in (64,192,512,1024)]}
         bad_path = bool(set(path.parts)&forbidden) or path.suffix.lower() in {'.sqlite3','.db','.docx','.chngf','.hgf','.exe','.dll','.jpg','.png','.bak'}
-        bad_path |= path.name in {'seed.json','assistant-connection.json','server.json','update-signing-key.txt'} or path.name.startswith('~$')
+        bad_path |= path.name in {'seed.json','factory-seed.json','assistant-connection.json','server.json','update-signing-key.txt'} or path.name.startswith('~$')
         if len(path.parts)>1 and path.parts[0] not in allowed_roots:bad_path=True
         if bad_path and not public_icon:
             problems.append((name,'private or generated path'));continue
@@ -59,7 +59,7 @@ def check_history():
         if git('cat-file','-t',oid).strip()!=b'blob':continue
         checked+=1
         if (any(p in {'data','dist','build','templates','.private','fixtures'} for p in path.parts)
-                or path.name in {'seed.json','assistant-connection.json','update-signing-key.txt'}
+                or path.name in {'seed.json','factory-seed.json','assistant-connection.json','update-signing-key.txt'}
                 or path.suffix.lower() in {'.docx','.chngf','.hgf','.db','.sqlite3','.exe','.dll','.bak'}):
             print('BLOCKED historical private path: '+name);return False
         blob=git('cat-file','blob',oid)

@@ -30,6 +30,7 @@
 !/tests/test_deterministic_repair.py
 !/tests/test_class_hours.py
 !/tests/test_updates.py
+!/tests/test_composite_requests.py
 /tools/*
 !/tools/check_repository.py
 !/tools/lock_requirements.py
@@ -42,6 +43,7 @@
 !/tools/prepare_public_build.py
 !/tools/publish_release.py
 !/tools/publish_source.py
+!/tools/verify_public_install.py
 /docs/*
 !/docs/AUDIT-2026-11-10.md
 !/docs/DETERMINISTIC-REPAIR.md

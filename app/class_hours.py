@@ -2,6 +2,7 @@
 from copy import deepcopy
 from functools import lru_cache
 import json
+import os
 from pathlib import Path
 import re
 
@@ -17,8 +18,15 @@ def _name(value):return re.sub(r'[\s.]+','',str(value or '')).lower().replace('�
 def _factory_leaders():
     # Fill missing legacy assignments from the personalized installer seed.
     # Match actual names, never numeric IDs of an unrelated school project.
-    try:seed=json.loads(Path(__file__).with_name('seed.json').read_text(encoding='utf-8'))
-    except (OSError,ValueError):return {}
+    candidates=[Path(__file__).with_name('seed.json')]
+    if os.environ.get('SCHEDULE_DATA'):candidates.insert(0,Path(os.environ['SCHEDULE_DATA'])/'factory-seed.json')
+    seed=None
+    for candidate in candidates:
+        try:
+            value=json.loads(candidate.read_text(encoding='utf-8'))
+            if isinstance(value,dict):seed=value;break
+        except (OSError,ValueError):continue
+    if seed is None:return {}
     teachers={t['id']:_name(t['name']) for t in seed.get('teachers',[])}
     return {_name(c['name']):teachers[c['homeroomTeacherId']] for c in seed.get('classes',[])
             if c.get('homeroomTeacherId') in teachers}
@@ -78,7 +86,7 @@ def ensure_subject(state):
         raise ValueError('Для классного часа зарезервировано название «Классный час» и сокращение «Кл/ч».')
 
 
-def create(state,day,class_id,lesson_id=None):
+def create(state,day,class_id,lesson_id=None,replace_lesson_id=None):
     from .model import lessons_for_day,parse_date,paired_subjects
     weekday=parse_date(day).weekday()
     if weekday>4:raise ValueError('Классный час проводится в учебный день.')
@@ -98,12 +106,23 @@ def create(state,day,class_id,lesson_id=None):
         raise ValueError(cls['name']+': сначала разделите совместное занятие первого урока в редакторе.')
     paired=paired_subjects(state)
     preserve=any((class_id,l['subjectId']) in paired for l in first)
+    replacement=None
+    if replace_lesson_id:
+        replacement=next((l for l in rows if l['id']==replace_lesson_id),None)
+        if (lesson_id or not replacement or replacement['classIds']!=[class_id]
+                or len(replacement['teacherIds'])!=1 or 'groupIndex' in replacement
+                or any(replacement.get(k) for k in ('classHour','joint','technologyJoint'))):
+            raise ValueError('Выберите обычный урок целого класса, который нужно заменить классным часом.')
+        if (class_id,replacement['subjectId']) in paired:
+            raise ValueError('Нельзя заменить только половину спаренного занятия классным часом.')
+        if replacement.get('locked') and replacement['period']!=1:
+            raise ValueError('Сначала снимите закрепление с заменяемого урока.')
     if lesson_id:
         source=next((l for l in rows if l['id']==lesson_id),None)
         if not source or first!=[source] or source['teacherIds']!=[teacher] or 'groupIndex' in source:
             raise ValueError('Переименовать в «Кл/ч» можно первый урок целого класса у его классного руководителя.')
         if preserve:raise ValueError('Спаренный урок нельзя заменить наполовину. Назначьте классный час через дополнительные занятия или AI-помощника: пара будет переставлена целиком.')
-    replaced=[] if preserve else first
+    replaced=[replacement] if replacement else [] if preserve else first
     ident=replaced[0]['id'] if len(replaced)==1 else f'class-hour-{day}-{class_id}'
     room_ids=[]
     if len(first)==1 and len(first[0]['roomIds'])==1:room_ids=first[0]['roomIds'][:]
@@ -121,10 +140,24 @@ def create(state,day,class_id,lesson_id=None):
 
 def apply(state,day,actions):
     from .model import lessons_for_day
-    requested=[r for r in actions if r['type']=='class_hour']
+    requested=[deepcopy(r) for r in actions if r['type']=='class_hour']
     if not requested:return
+    # Revise a previously accepted hour atomically: restore its former source,
+    # then consume the newly named lesson. Shared partners retain their hour.
+    original=lessons_for_day(state,day)
+    revisions={l['id']:l for l in original if l.get('classHour') and any(
+        r['classId'] in l['classIds'] and r.get('replaceLessonId') and not any(
+            s['id']==r['replaceLessonId'] and r['classId'] in s['classIds'] for s in l['classHour']['sources'])
+        for r in requested)}
+    for old in revisions.values():
+        for cid in old['classIds']:
+            if not any(r['classId']==cid for r in requested):
+                sources=[s for s in old['classHour']['sources'] if cid in s['classIds']]
+                requested.append({'type':'class_hour','classId':cid,'lessonId':None,
+                    'replaceLessonId':sources[0]['id'] if len(sources)==1 and sources[0]['period']!=1 else None})
+        state.setdefault('days',{})[day]=restore(state,day,old['id'])
     ensure_subject(state)
-    events=list({e['id']:e for e in (create(state,day,r['classId'],r.get('lessonId')) for r in requested)}.values())
+    events=list({e['id']:e for e in (create(state,day,r['classId'],r.get('lessonId'),r.get('replaceLessonId')) for r in requested)}.values())
     original=lessons_for_day(state,day)
     grouped={}
     for event in events:grouped.setdefault(event['teacherIds'][0],[]).append(event)
@@ -168,12 +201,21 @@ def problems(state,lesson,day=None):
         assert len({s['id'] for s in meta['sources']})==len(meta['sources'])
         paired=paired_subjects(state)
         for source in meta['sources']:
-            assert len(source['classIds'])==1 and source['classIds'][0] in lesson['classIds'] and source['day']==lesson['day'] and source['period']==1
+            assert len(source['classIds'])==1 and source['classIds'][0] in lesson['classIds'] and source['day']==lesson['day'] and 1<=source['period']<=8
             assert source['subjectId']!=SUBJECT_ID and (source['classIds'][0],source['subjectId']) not in paired
             assert not any(source.get(k) for k in ('classHour','joint','technologyJoint'))
     except (AssertionError,KeyError,TypeError,ValueError):
         return ['Классный час должен проходить только первым уроком выбранной даты у классного руководителя своего класса.']
     return []
+
+
+def cancelled_for_absence(state,lesson,day):
+    from .model import is_absent,unavailable,parse_date
+    from .commitments import teacher_busy
+    if not lesson.get('classHour'):return False
+    teacher=next((t for t in state['teachers'] if t['id']==lesson['teacherIds'][0]),None)
+    return bool(teacher and (is_absent(state,teacher['id'],day,1)
+                or unavailable(teacher,parse_date(day).weekday(),1) or teacher_busy(state,teacher['id'],day,1)))
 
 
 def authorized(state,lesson,day,source=None):

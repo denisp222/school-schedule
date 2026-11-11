@@ -446,6 +446,10 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
     state = raw
     from .commitments import validate as validate_commitments
     validate_commitments(state)
+    notices=state.get('dayNotices',{})
+    if (not isinstance(notices,dict) or len(notices)>1000 or
+            any(not isinstance(rows,list) or len(rows)>40 or any(not isinstance(text,str) or len(text)>1000 for text in rows) for rows in notices.values())):
+        raise StateError('Не удалось прочитать пояснения к изменениям дня.')
     ids = {}
     for kind in ("teachers", "classes", "subjects", "rooms", "plan", "absences", "students"):
         rows = state.get(kind, [])
@@ -518,6 +522,8 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
         from .ai_planner import Action
         adapter=TypeAdapter(list[Action])
         lesson_ids={l['id'] for rows in [state['baseLessons'],*state['days'].values(),*state['dayBases'].values()] for l in rows}
+        lesson_ids.update(s['id'] for rows in [*state['days'].values(),*state['dayBases'].values()]
+                          for lesson in rows for s in lesson.get('classHour',{}).get('sources',[]))
         for day,rows in conditions.items():
             try:
                 if parse_date(day).weekday()>4 or not isinstance(rows,list) or len(rows)>24:raise ValueError()
@@ -527,6 +533,7 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
                     for field,kind in [('teacherId','teachers'),('classId','classes'),('roomId','rooms')]:
                         if hasattr(item,field) and getattr(item,field) is not None and getattr(item,field) not in ids[kind]:raise ValueError()
                     if hasattr(item,'lessonId') and item.lessonId is not None and item.lessonId not in lesson_ids:raise ValueError()
+                    if hasattr(item,'replaceLessonId') and item.replaceLessonId is not None and item.replaceLessonId not in lesson_ids:raise ValueError()
                     if item.type in ('class_day','group_day') and item.first>7:
                         permit_ids={r['lessonId'] for r in rows if r.get('type')=='allow_eighth'}
                         candidates=[l for lessons in [state['baseLessons'],*state['days'].values()] for l in lessons if item.classId in l['classIds']]
@@ -855,7 +862,8 @@ def issues(state: dict, lessons: list[dict], day=None, *, gaps: bool = True) -> 
             if missing and (cid,d,tuple(missing)) not in reported:
                 reported.add((cid,d,tuple(missing)))
                 label=(record.get('groupNames') or ['Подгруппа 1','Подгруппа 2'])[g]
-                add('error' if day else 'warning','gap',f"{record['name']}, {label}: окно в {DAYS[d].lower()} ({', '.join(map(str,missing))} ур.).",[])
+                permitted=day and any(r['type']=='allow_class_gaps' for r in state.get('assistantConditions',{}).get(str(day),[]))
+                add('error' if day and not permitted else 'warning','gap',f"{record['name']}, {label}: окно в {DAYS[d].lower()} ({', '.join(map(str,missing))} ур.).",[])
     from .commitments import conflicts as commitment_conflicts
     out.extend(commitment_conflicts(state,lessons,day))
     return out

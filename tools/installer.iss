@@ -89,9 +89,22 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
-var ExitCode: Integer; ExistingComponents: AnsiString; KeepVoice: Boolean;
+var ExitCode: Integer; ExistingComponents: AnsiString; KeepVoice: Boolean; LegacySeed, PrivateSeed: String;
 begin
   if CurStep = ssInstall then begin
+    LegacySeed := ExpandConstant('{app}\_internal\app\seed.json');
+    PrivateSeed := DataDir('') + '\factory-seed.json';
+    if FileExists(LegacySeed) then begin
+      ForceDirectories(DataDir(''));
+      if FileExists(PrivateSeed) then
+        if not FileCopy(PrivateSeed, DataDir('') + '\factory-seed.previous.json', False) then
+          RaiseException('Не удалось сохранить прежние настройки школы. Закройте приложение и повторите установку.');
+      if not FileCopy(LegacySeed, PrivateSeed, False) then
+        RaiseException('Не удалось перенести настройки школы. Данные сохранены в прежней папке.');
+      if GetSHA256OfFile(LegacySeed) <> GetSHA256OfFile(PrivateSeed) then
+        RaiseException('Копия настроек школы не прошла проверку. Обновление остановлено.');
+      DeleteFile(LegacySeed);
+    end;
     { Preserve private legacy Word templates before any program files change. }
     ForceDirectories(DataDir('') + '\templates');
     if not FileExists(DataDir('') + '\templates\ПОНЕДЕЛЬНИК УЧИТЕЛЬ.docx') then

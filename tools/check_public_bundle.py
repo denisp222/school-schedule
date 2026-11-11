@@ -14,7 +14,7 @@ def check_bundle(folder):
     if value != {'school':{'name':'Школа'},'teachers':[],'classes':[],'subjects':[],
                  'rooms':[],'plan':[],'baseLessons':[]}:
         raise ValueError('Public initial project contains unexpected data.')
-    forbidden_names={'seed.json','demo_seed.json','assistant-connection.json','server.json',
+    forbidden_names={'seed.json','factory-seed.json','demo_seed.json','assistant-connection.json','server.json',
                      'application.log','assistant-deepseek.json','update-signing-key.txt'}
     for item in folder.rglob('*'):
         parts=item.relative_to(folder).parts

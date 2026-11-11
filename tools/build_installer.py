@@ -37,6 +37,7 @@ def main():
     release=Path((ROOT/'build/latest.txt').read_text(encoding='utf-8').strip()).resolve()
     assert release.is_relative_to(ROOT/'build/releases') and (release/'Расписание.exe').is_file()
     profile=json.loads((release/'build-profile.json').read_text(encoding='utf-8'))
+    if profile.get('version')!=VERSION:raise RuntimeError('Application version is stale; build the application before packaging.')
     if profile['public'] is not (not args.private_school):
         raise RuntimeError('Build profile mismatch. Public installers require a clean public application build.')
     voice=profile['voice'] and not args.without_voice

@@ -45,8 +45,8 @@ def main():
         fetch(client,view_url,view,view_hash)
         destination=ROOT/'assets/webview';destination.mkdir(parents=True,exist_ok=True)
         with ZipFile(view) as package:
-            for source,name in [('lib/net462/Microsoft.Web.WebView2.Core.dll','Microsoft.Web.WebView2.Core.dll'),
-                                ('lib/net462/Microsoft.Web.WebView2.WinForms.dll','Microsoft.Web.WebView2.WinForms.dll'),
+            for source,name in [('lib_manual/netcoreapp3.0/Microsoft.Web.WebView2.Core.dll','Microsoft.Web.WebView2.Core.dll'),
+                                ('lib_manual/netcoreapp3.0/Microsoft.Web.WebView2.WinForms.dll','Microsoft.Web.WebView2.WinForms.dll'),
                                 ('build/native/x64/WebView2Loader.dll','WebView2Loader.dll'),('LICENSE.txt','LICENSE.txt')]:
                 (destination/name).write_bytes(package.read(source))
         compiler=VENDOR/'innosetup-7.1.1-x64.exe'

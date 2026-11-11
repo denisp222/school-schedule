@@ -257,6 +257,7 @@ def _day_payload(state: dict, day: str) -> dict:
             times[str(g)]={'first':min(periods),'last':max(periods)} if periods else None
         group_times[cls['id']]=times
     from .commitments import matching
+    from .day_preferences import gap_details
     return {
         "date": day,
         "weekday": parse_date(day).weekday(),
@@ -266,6 +267,8 @@ def _day_payload(state: dict, day: str) -> dict:
         "issues": problems,
         "absences": absences,
         "groupTimes":group_times,
+        "classGapDetails":gap_details(state,lessons),
+        "notices":state.get('dayNotices',{}).get(day,[]),
         "externalActivities":matching(state,day),
         "stats": {
             "lessons": len(lessons),
@@ -366,7 +369,9 @@ def _repair_variants(state: dict, day: str, allow_other: bool, reason: str,
     if set(teacher_ids)-{t['id'] for t in work['teachers']}:raise ValueError('Выбранный учитель больше не найден. Обновите справочники.')
     for tid in sorted(set(teacher_ids)):
         work['absences'].append({'id':'preview-'+tid,'teacherId':tid,'start':day,'end':day,'first':1,'last':8})
-    results=conditioned_variants(work,day,state.get('assistantConditions',{}).get(day,[]))
+    conditions=deepcopy(state.get('assistantConditions',{}).get(day,[]))
+    conditions += [{'type':'teacher_absence','teacherId':tid,'first':1,'last':8} for tid in sorted(set(teacher_ids))]
+    results=conditioned_variants(work,day,conditions)
     summaries=[]
     for index,result in enumerate(results):
         token=uuid.uuid4().hex
@@ -645,7 +650,8 @@ def _guard_change(state: dict, before: list[dict], after: list[dict], day: str, 
     for cls in state['classes']:
         for group in (0,1):
             periods=[l['period'] for l in after if cls['id'] in l['classIds'] and group in student_groups(l,cls['id'])]
-            if gap_slots(periods):raise ValueError(f"{cls['name']}: у подгруппы появляется окно. Сдвиньте уроки или используйте подбор.")
+            if gap_slots(periods) and not any(r['type']=='allow_class_gaps' for r in (conditions or [])):
+                raise ValueError(f"{cls['name']}: у подгруппы появляется окно. Сдвиньте уроки или используйте подбор.")
 
 
 def _journal(state: dict, day: str, before: list[dict], after: list[dict], reason: str) -> None:

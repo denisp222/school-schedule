@@ -53,6 +53,7 @@ function assistantSelected() {
 
 function assistantConditionLabel(row) {
   if(row.type==='class_hour')return `${nameOf('classes',row.classId)}: Кл/ч первым уроком у классного руководителя`;
+  if(row.type==='allow_class_gaps')return 'Резервный вариант: окна у учеников показаны для проверки';
   if(row.type==='join_technology')return `Совместная технология, ${row.period}-й урок: ${nameOf('teachers',row.teacherId)}`;
   if(row.type==='allow_technology')return `Разрешены исключения для технологии у ${nameOf('teachers',row.teacherId)}`;
   if(row.type==='group_day')return `${nameOf('classes',row.classId)}, ${subgroupName(row.classId,row.groupIndex)}: начало ${row.first}-м уроком, окончание не позже ${row.last}-го`;
@@ -87,6 +88,14 @@ function renderAssistant() {
       <div class="assistant-conversation" aria-label="Диалог с помощником">
         ${a.messages.map(m => `<article class="assistant-message ${m.role === 'user' ? 'from-user' : ''}"><strong>${m.role === 'user' ? 'Вы' : 'AI-помощник'}</strong><p>${esc(m.text || m.content)}</p></article>`).join('')}
       </div>
+      ${response ? `<section class="assistant-understood" aria-labelledby="assistant-understood-title">
+        <h2 id="assistant-understood-title">${response.questions.length || response.unsupported.length?'Нужно уточнить':'Проверьте условия'}</h2>
+        ${response.questions.map(s => notice(s, 'warn')).join('')}
+        ${response.unsupported.map(s => notice('Пока не поддерживается: ' + s, 'warn')).join('')}
+        ${response.labels.length ? `<details ${response.labels.length<6?'open':''}><summary>Условия: ${response.labels.length}</summary><ul>${response.labels.map(s => `<li>${esc(s)}</li>`).join('')}</ul></details>` : ''}
+        ${response.draftId && !a.preview ? `<button class="btn primary" type="button" data-action="assistant-preview" ${a.pending ? 'disabled' : ''}>Условия верны, подобрать варианты</button>` : ''}
+      </section>` : ''}
+      ${assistantPreview()}
       <form id="assistant-request-form" class="assistant-composer">
         <label class="field"><span class="sr-only">${a.messages.length ? 'Уточнение или исправление условий' : 'Ваше сообщение'}</span>
           <textarea class="input assistant-input" id="assistant-message" name="message" rows="4" maxlength="4000" placeholder="Например: учитель отсутствует на втором уроке. Укажите фамилию и класс, для которого нужно изменить расписание." ${a.pending ? 'disabled' : ''}>${esc(a.text)}</textarea>
@@ -96,14 +105,6 @@ function renderAssistant() {
       ${voice.error ? `<div role="alert" class="voice-error">${notice(voice.error,voice.warning?'warn':'error')}</div>` : ''}
       <div class="assistant-note assistant-request-status" role="status" aria-live="polite">${esc(a.pending || '')}</div>
       ${a.error ? `<div role="alert">${notice(a.error, 'error')}</div>` : ''}
-      ${response ? `<section class="assistant-understood" aria-labelledby="assistant-understood-title">
-        <h2 id="assistant-understood-title">Проверьте условия</h2>
-        ${response.labels.length ? `<ul>${response.labels.map(s => `<li>${esc(s)}</li>`).join('')}</ul>` : '<p>Условия для расчёта ещё не заданы.</p>'}
-        ${response.questions.map(s => notice(s, 'warn')).join('')}
-        ${response.unsupported.map(s => notice('Пока не поддерживается: ' + s, 'warn')).join('')}
-        ${response.draftId && !a.preview ? `<button class="btn primary" type="button" data-action="assistant-preview" ${a.pending ? 'disabled' : ''}>Условия верны, подобрать варианты</button>` : ''}
-      </section>` : ''}
-      ${assistantPreview()}
       <details class="assistant-capabilities"><summary>Что помощник умеет сейчас</summary>
         <p>Отсутствие учителя на весь день или отдельные уроки, точное время начала и предельное время окончания занятий класса, закрепление существующего урока, закрытие кабинета, явная отмена урока.</p>
         <p>Спаренные уроки идут подряд у каждой подгруппы. «Разговоры о важном» — только первым уроком понедельника, в том числе совместные. Если класс приходит ко второму, этот урок можно отменить.</p>
@@ -127,7 +128,11 @@ async function assistantWork(message, callback, connection = false) {
   render();
   try { await callback(); }
   catch(error) {if(connection)a.connectionError=error.message;else {a.error=error.message;if(S.page==='day')toast(error.message,'error');}}
-  finally { a.pending='';a.history=null; if(['assistant','settings','day'].includes(S.page)) render(); }
+  finally {
+    a.pending='';a.history=null;
+    if(['assistant','settings','day'].includes(S.page))render();
+    if(S.page==='assistant' && a.response && !connection)requestAnimationFrame(()=>$('.assistant-understood')?.scrollIntoView({block:'nearest'}));
+  }
 }
 
 async function sendAssistant(form) {
@@ -232,9 +237,13 @@ async function showSchedulePreview(kind,date,variants,selected=0) {
 function schedulePreviewBar() {
   const p=S.preview,v=previewSelected();if(!p || !v)return '';
   const main=v.id===p.variants[0].id;
-  const proof=main?`<p class="assistant-note">${v.search?.primaryProven && v.search?.scope==='all-rooms'?'Минимум перестановок подтверждён.':'Лучший найденный вариант.'}</p>`:'';
+  const proof=main?`<p class="assistant-note">${v.search?.primaryProven && v.search?.scope==='all-rooms'?'Лучший вариант по заданным условиям.':'Лучший найденный вариант.'}</p>`:'';
   const classHours=v.stats?.classHours?`<p class="assistant-note">Классных часов: ${v.stats.classHours}${v.stats.classHourClasses>v.stats.classHours?' · классов: '+v.stats.classHourClasses:''}</p>`:'';
-  return `<section class="schedule-preview-bar" aria-label="Предпросмотр расписания"><div class="preview-heading"><h2>Выберите вариант</h2><span>Изменения ещё не применены</span></div>${proof}${classHours}<div class="variant-strip">${p.variants.map((row,i)=>`<button class="variant-card ${row.id===v.id?'active':''}" data-action="preview-variant" data-id="${row.id}" aria-pressed="${row.id===v.id}"><span class="v-title">${i===0?'Основной вариант':'Вариант '+(i+1)}</span><span>${row.stats?.moved || 0} переставлено · ${row.stats?.cancelled || 0} отменено${row.stats?.groupLosses ? ' · занятий подгрупп отменено: '+row.stats.groupLosses : ''}${row.stats?.joined?' · совместных: '+row.stats.joined:''}</span></button>`).join('')}</div><div class="assistant-actions"><button class="btn primary" data-action="preview-apply" ${S.ai.pending?'disabled':''}>Сохранить этот вариант</button><button class="btn ghost" data-action="preview-cancel">${p.kind==='assistant'?'Вернуться к просьбе':p.kind==='technology'?'Вернуться к условиям':'Отменить просмотр'}</button></div></section>`;
+  const alerts=(v.warnings || []).filter(text=>text.startsWith('Классный час') || text.startsWith('Резервный вариант'));
+  if(v.stats?.classGapDetails?.length)alerts.push('Окна: '+v.stats.classGapDetails.map(row=>`${row.className} — ${row.periods.join(', ')} ур.`).join('; '));
+  if(v.stats?.youngerLate)alerts.push('В этом варианте у 5–6 классов остаются уроки позже обычного окончания дня.');
+  const warnings=alerts.map(text=>notice(text,'warn')).join('');
+  return `<section class="schedule-preview-bar" aria-label="Предпросмотр расписания"><div class="preview-heading"><h2>Выберите вариант</h2><span>Изменения ещё не применены</span></div>${proof}${classHours}${warnings}<div class="variant-strip">${p.variants.map((row,i)=>`<button class="variant-card ${row.id===v.id?'active':''}" data-action="preview-variant" data-id="${row.id}" aria-pressed="${row.id===v.id}"><span class="v-title">${i===0?'Основной вариант':'Вариант '+(i+1)}</span><span>${row.stats?.moved || 0} переставлено · ${row.stats?.cancelled || 0} отменено${row.stats?.groupLosses ? ' · занятий подгрупп отменено: '+row.stats.groupLosses : ''}${row.stats?.classGapsAfter?' · есть окна':''}${row.stats?.youngerLate?' · есть поздние уроки у 5–6':''}${row.stats?.joined?' · совместных: '+row.stats.joined:''}</span></button>`).join('')}</div><div class="assistant-actions"><button class="btn primary" data-action="preview-apply" ${S.ai.pending?'disabled':''}>${v.stats?.classGapsAfter?'Сохранить вариант с окнами':'Сохранить этот вариант'}</button><button class="btn ghost" data-action="preview-cancel">${p.kind==='assistant'?'Вернуться к просьбе':p.kind==='technology'?'Вернуться к условиям':'Отменить просмотр'}</button></div></section>`;
 }
 document.addEventListener('change', e => {
   if(e.target.id==='assistant-provider') {

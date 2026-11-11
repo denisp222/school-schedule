@@ -39,6 +39,8 @@ jobs:
         run: python tools/build_application.py
       - name: Build and inspect public installer
         run: python tools/build_installer.py --without-voice
+      - name: Verify installed app, reports, upgrade, and preservation
+        run: python tools/verify_public_install.py
       - name: Sign update description
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}

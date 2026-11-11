@@ -1113,6 +1113,10 @@ dialog::backdrop {
 .assistant-message p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 75ch; }
 .assistant-understood, .assistant-result { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line-strong); }
 .assistant-understood ul { padding-left: 22px; line-height: 1.8; }
+.assistant-understood > details { margin:14px 0; }
+.assistant-understood > .btn { margin-top:14px; }
+.cell.pupil-gap { background:#fff3d7;border-left:3px solid #ac7514;color:#78500a; }
+.schedule-preview-bar > .notice { margin:14px 0; }
 .assistant-capabilities { max-width: 75ch; margin-top: 28px; color: var(--ink-2); }
 .assistant-existing { margin: 18px 0; padding: 12px 16px; background: var(--paper-2); border-radius: 9px; }
 .assistant-existing p { margin: 0; }
