@@ -5,8 +5,11 @@ from pathlib import Path
 # The desktop shortcut uses the installed, signed Python executable. Keep the
 # project's dependencies without executing the development-folder redirector.
 if not getattr(sys,'frozen',False):
-    packages=Path(__file__).resolve().parent/'.venv'/'Lib'/'site-packages'
-    if packages.is_dir():site.addsitedir(str(packages))
+    candidates=[Path(__file__).resolve().parent/'.venv'/'Lib'/'site-packages',
+                Path(sys.executable).resolve().parent.parent/'Lib'/'site-packages',
+                *map(Path,site.getsitepackages())]
+    for packages in dict.fromkeys(candidates):
+        if packages.is_dir():site.addsitedir(str(packages))
 
 from desktop import run
 

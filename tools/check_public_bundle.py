@@ -20,11 +20,14 @@ def check_bundle(folder):
         parts=item.relative_to(folder).parts
         # python-docx includes a generic empty Office package. It is library
         # data, checked byte-for-byte against the pinned installed dependency.
-        stock=internal/'docx/templates'
-        if item.is_relative_to(stock):
+        import docx,pandas
+        stock_roots=[(internal/'docx/templates',Path(docx.__file__).parent/'templates'),
+                     (internal/'pandas/io/formats/templates',Path(pandas.__file__).parent/'io/formats/templates')]
+        stock=next(((packed,installed) for packed,installed in stock_roots if item.is_relative_to(packed)),None)
+        if stock:
             if item.is_dir():continue
-            import docx
-            reference=Path(docx.__file__).parent/'templates'/item.relative_to(stock)
+            packed,installed=stock
+            reference=installed/item.relative_to(packed)
             if not reference.is_file() or reference.read_bytes()!=item.read_bytes():
                 raise ValueError('Modified library template in public application.')
             continue

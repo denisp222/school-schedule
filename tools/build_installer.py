@@ -17,7 +17,7 @@ from datetime import datetime
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from app.ai_budget import PAID_MODEL
-from app.model import validate_state
+from app.model import validate_state, normalize_state
 from app.version import VERSION
 
 
@@ -53,7 +53,7 @@ def main():
         revision,seed=prepare_seed(ROOT/'data/schedule.sqlite3')
         (stage/'_internal/app/seed.json').write_text(json.dumps(seed,ensure_ascii=False),encoding='utf-8')
     else:
-        revision,seed=None,validate_state(json.loads((ROOT/'app/empty_seed.json').read_text(encoding='utf-8')))
+        revision,seed=None,validate_state(normalize_state(json.loads((ROOT/'app/empty_seed.json').read_text(encoding='utf-8'))))
         from check_public_bundle import check_bundle
         check_bundle(stage)
     defaults=stage.parent/(stage.name+'-assistant-defaults.json')
