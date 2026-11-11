@@ -3,7 +3,7 @@ from copy import deepcopy
 import hashlib
 import json
 
-POLICY_VERSION=2
+POLICY_VERSION=3
 
 
 def canonical_state(state):

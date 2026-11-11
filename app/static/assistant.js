@@ -52,7 +52,7 @@ function assistantSelected() {
 }
 
 function assistantConditionLabel(row) {
-  if(row.type==='class_hour')return `${nameOf('classes',row.classId)}: Кл/ч первым уроком у классного руководителя`;
+  if(row.type==='class_hour')return `${nameOf('classes',row.classId)}: Кл/ч ${row.period||1}-м уроком у классного руководителя`;
   if(row.type==='allow_class_gaps')return 'Резервный вариант: окна у учеников показаны для проверки';
   if(row.type==='join_technology')return `Совместная технология, ${row.period}-й урок: ${nameOf('teachers',row.teacherId)}`;
   if(row.type==='allow_technology')return `Разрешены исключения для технологии у ${nameOf('teachers',row.teacherId)}`;
@@ -171,7 +171,9 @@ async function ensureAssistantHistory() {
 function assistantHistoryList() {
   const a=S.ai;
   if(!a.history)ensureAssistantHistory();
-  return `<aside class="conversation-sidebar" aria-label="Диалоги"><div class="conversation-heading"><h2>Диалоги</h2>${button('Новый диалог','assistant-new','ghost','plus')}</div><div class="conversation-list">${!a.history?'<p class="assistant-note">Загружаем диалоги…</p>':a.history.length?a.history.map(row=>`<button class="assistant-history-row ${row.id===a.threadId?'active':''}" data-action="assistant-open-thread" data-id="${esc(row.id)}" aria-current="${row.id===a.threadId?'true':'false'}"><span title="${esc(row.title)}">${esc(row.title)}</span><time>${fmtDate(row.date)}</time></button>`).join(''):'<p class="assistant-note">Здесь появятся ваши диалоги.</p>'}${a.historyMore?button('Показать ещё','assistant-more-history','ghost'):''}</div></aside>`;
+  const groups=new Map();for(const row of a.history||[]) {if(!groups.has(row.date))groups.set(row.date,[]);groups.get(row.date).push(row);}
+  const rows=[...groups.entries()].sort(([a],[b])=>b.localeCompare(a)).map(([date,items])=>`<section aria-label="Диалоги на ${fmtDate(date)}"><h3 class="conversation-date">${fmtDate(date)}</h3>${items.map(row=>`<div class="conversation-entry"><button class="assistant-history-row ${row.id===a.threadId?'active':''}" data-action="assistant-open-thread" data-id="${esc(row.id)}" aria-current="${row.id===a.threadId?'true':'false'}"><span title="${esc(row.title)}">${esc(row.title)}</span></button><button class="conversation-delete" data-action="assistant-delete-thread" data-id="${esc(row.id)}" aria-label="Удалить диалог: ${esc(row.title)}" title="Удалить диалог">${icon('trash',14)}</button></div>`).join('')}</section>`).join('');
+  return `<aside class="conversation-sidebar" aria-label="Диалоги"><div class="conversation-heading"><h2>Диалоги</h2>${button('Новый диалог','assistant-new','ghost','plus')}</div><div class="conversation-list">${!a.history?'<p class="assistant-note">Загружаем диалоги…</p>':rows||'<p class="assistant-note">Здесь появятся ваши диалоги.</p>'}${a.historyMore?button('Показать ещё','assistant-more-history','ghost'):''}</div></aside>`;
 }
 
 async function openAssistantThread(id) {
@@ -275,7 +277,11 @@ document.addEventListener('click', async e => {
   if (!node) return;
   const a = S.ai;
   const action = node.dataset.action;
-  if(a.pending && ['assistant-open-thread','assistant-new'].includes(action))return;
+  if(a.pending && ['assistant-open-thread','assistant-new','assistant-delete-thread'].includes(action))return;
+  if(action==='assistant-delete-thread') {
+    if(!await askConfirm({title:'Удалить диалог?',text:'Переписка будет удалена. Уже сохранённое расписание останется без изменений.',yes:'Удалить диалог'}))return;
+    try {await api('/assistant/conversations/'+encodeURIComponent(node.dataset.id)+'/delete',{});if(a.threadId===node.dataset.id)assistantReset();a.history=null;render();toast('Диалог удалён.');}catch(error){toast(error.message,'error');}return;
+  }
   if(action==='assistant-more-history') {try {const result=await api('/assistant/conversations?offset='+a.history.length);a.history.push(...result.conversations);a.historyMore=result.hasMore;render();}catch(error){toast(error.message,'error');}return;}
   if(action==='assistant-hide-spending') {a.showSpending=false;render();return;}
   if(action==='assistant-open-thread') {try{await openAssistantThread(node.dataset.id);}catch(error){toast(error.message,'error');}return;}

@@ -74,19 +74,20 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
     class_rules={r['classId']:r for r in conditions if r['type']=='class_day'}
     group_rules={(r['classId'],r['groupIndex']):r for r in conditions if r['type']=='group_day'}
     pins={r['lessonId']:r['period'] for r in conditions if r['type']=='pin_lesson'}
-    pins.update({l['id']:1 for l in before if l.get('classHour')})
+    pins.update({l['id']:l['period'] for l in before if l.get('classHour')})
     pins.update({l['id']:(l.get('technologyJoint') or l['joint'])['period'] for l in before if l.get('joint') or l.get('technologyJoint')})
     original_room_use={(r,l['period']) for l in before for r in l['roomIds'] if not any(t in teacher_ids or is_absent(state,t,day,l['period']) or unavailable(ix['teachers'][t],weekday,l['period']) or teacher_busy(state,t,day,l['period']) for t in l['teacherIds'])}
     unit_counts={};has_capacity=any(r.get('capacity') for r in state['rooms'])
     def rooms_for(unit,p,locked):
-        if allow_room_changes=='relaxed':return [tuple(unit['roomIds'])]
+        fixed_room=unit.get('classHour',{}).get('roomId')
+        current=(fixed_room,) if fixed_room else tuple(unit['roomIds'])
+        if allow_room_changes=='relaxed':return [current]
         count=unit_counts[id(unit)]
         def suitable(r):
             room=ix['rooms'][r]
             return not unavailable(room,weekday,p) and not room_busy(state,r,day,p) and (unit.get('classHour') or not room.get('subjectIds') or unit['subjectId'] in room['subjectIds']) and (not room.get('capacity') or count is None or count<=room['capacity'])
-        current=tuple(unit['roomIds'])
         options=[current] if all(suitable(r) for r in current) else []
-        if locked or len(current)>1 or not allow_room_changes:return options
+        if locked or unit.get('classHour',{}).get('roomId') or len(current)>1 or not allow_room_changes:return options
         # Include rooms freed by other moves, not only rooms free in the base.
         free=[(r['id'],) for r in sorted(state['rooms'],key=lambda r:r['id']) if suitable(r['id']) and (r['id'],)!=current]
         return options+free

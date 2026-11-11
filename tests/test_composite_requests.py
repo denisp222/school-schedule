@@ -11,7 +11,8 @@ DAY='2026-11-13'
 
 
 def fixture():
-    return normalize_state({'teachers':[{'id':t,'name':f'Учитель {t}','subjectIds':['math','pe']} for t in 'abcde'],
+    return normalize_state({'teachers':[{'id':t,'name':f'Учитель {t}','subjectIds':['math','pe'],
+        'homeroomRoomId':'r1' if t=='a' else 'r2' if t=='d' else ''} for t in 'abcde'],
         'classes':[{'id':'one','name':'8г','homeroomTeacherId':'a'},
                    {'id':'two','name':'9а','homeroomTeacherId':'d'}],
         'subjects':[{'id':'math','name':'Математика'},{'id':'pe','name':'Физкультура'}],

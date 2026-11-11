@@ -21,6 +21,7 @@ KINDS = ("teachers", "classes", "subjects", "rooms", "plan", "absences", "studen
 
 ROOT = Path(__file__).resolve().parent
 SEED = ROOT / "seed.json"
+_UNSET_RULE=object()
 
 
 def is_eighth_exception(state, lesson):
@@ -28,10 +29,12 @@ def is_eighth_exception(state, lesson):
     return bool(rule and set(lesson.get('classIds',[]))==set(rule['classIds']) and set(lesson.get('teacherIds',[]))==set(rule['teacherIds']) and lesson.get('subjectId')==rule['subjectId'])
 
 
-def period_allowed(state,lesson,period=None,day=None,*,date=None):
+def period_allowed(state,lesson,period=None,day=None,*,date=None,_rule=_UNSET_RULE):
     p=int(lesson['period'] if period is None else period)
     d=int(lesson['day'] if day is None else day)
-    if is_eighth_exception(state,lesson):return d==eighth_exception(state)['day'] and p==8
+    rule=eighth_exception(state) if _rule is _UNSET_RULE else _rule
+    if rule and set(lesson.get('classIds',[]))==set(rule['classIds']) and set(lesson.get('teacherIds',[]))==set(rule['teacherIds']) and lesson.get('subjectId')==rule['subjectId']:
+        return d==rule['day'] and p==8
     if lesson.get('eighthOn'):
         try:
             approved=parse_date(lesson['eighthOn'])
@@ -150,7 +153,7 @@ def diff_lessons(before: list[dict], after: list[dict]) -> list[dict]:
 
 def must_be_first(subject: dict,lesson=None) -> bool:
     """«Разговоры о важном» всегда стоят первым уроком."""
-    return is_rov(subject)
+    return bool(subject.get('firstMonday',is_rov(subject)))
 
 
 def paired_subjects(state):
@@ -162,7 +165,7 @@ def paired_subjects(state):
 
 def plan_is_paired(plan,subjects):
     name=subjects.get(plan['subjectId'],{}).get('name','').lower()
-    technology=is_technology(name)
+    technology=is_technology(name) and subjects.get(plan['subjectId'],{}).get('pairedTechnology',True)
     hours=int(plan.get('hours') or 0)
     return bool(plan.get('doubleLessons') or technology and hours>=2 and hours%2==0)
 
@@ -478,7 +481,7 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
             raise StateError('Укажите численность двух подгрупп, 0 если она пока неизвестна.')
         if cls.get('size',0) and sum(sizes)>cls['size']:
             raise StateError('Численность подгрупп больше численности класса.')
-    for kind in ('teachers','classes','rooms'):
+    for kind in ('teachers','classes','rooms','subjects'):
         for record in state[kind]:
             for slot in record.get('unavailable',[]):
                 values=(slot.get('day'),slot.get('period')) if isinstance(slot,dict) else slot
@@ -490,6 +493,13 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
             _require_refs(state, "teachers", [room["teacherId"]], ids["teachers"], room.get("name", "?"))
         if room.get("classId"):
             _require_refs(state, "classes", [room["classId"]], ids["classes"], room.get("name", "?"))
+    for teacher in state['teachers']:
+        if 'homeroomRoomId' in teacher and not isinstance(teacher['homeroomRoomId'],str):raise StateError('Выберите кабинет классного руководителя.')
+        if teacher.get('homeroomRoomId'):
+            _require_refs(state,'rooms',[teacher['homeroomRoomId']],ids['rooms'],teacher['name'])
+    for subject in state['subjects']:
+        for key in ('firstMonday','pairedTechnology'):
+            if key in subject and type(subject[key]) is not bool:raise StateError('Некорректное правило предмета.')
     for absence in state["absences"]:
         _require_refs(state, "teachers", [absence.get("teacherId")], ids["teachers"], absence.get("id", "?"))
         try:
@@ -650,8 +660,12 @@ def check_slots(lessons: list[dict], state=None) -> list[str]:
 
 
 def indexes(state: dict) -> dict:
-    return {kind: {row["id"]: row for row in state[kind]} for kind in
+    result={kind: {row["id"]: row for row in state[kind]} for kind in
             ("teachers", "classes", "subjects", "rooms", "plan")}
+    # A search index lives for one unchanged school state. Validate the fixed
+    # exception once, rather than rebuilding reference sets for every slot.
+    result['_eighthRule']=eighth_exception(state)
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -704,8 +718,14 @@ def is_absent(state: dict, teacher_id: str, day, period: int) -> bool:
 
 
 def unavailable(record: dict, weekday: int, period: int) -> bool:
-    return any(int(x.get("day", -1) if isinstance(x,dict) else x[0]) == int(weekday) and int(x.get("period", 0) if isinstance(x,dict) else x[1]) == int(period)
-               for x in record.get("unavailable", []))
+    slots=record.get('unavailable')
+    if not slots:return False
+    weekday=int(weekday);period=int(period)
+    for slot in slots:
+        if isinstance(slot,dict):
+            if int(slot.get('day',-1))==weekday and int(slot.get('period',0))==period:return True
+        elif int(slot[0])==weekday and int(slot[1])==period:return True
+    return False
 
 
 def teacher_busy_at(state: dict, teacher_id: str, day, period: int) -> bool:
@@ -720,9 +740,10 @@ def slot_feasible(state,lesson,weekday,period,*,date=None,index=None,check_rooms
     """Shared static slot rules. Occupancy and daily limits are checked by callers."""
     from .commitments import teacher_busy,room_busy
     ix=index if index is not None else indexes(state)
-    if not period_allowed(state,lesson,period,weekday,date=date):return False
-    if lesson.get('classHour') and (period!=1 or date is not None and str(date)!=lesson['classHour']['date']):return False
+    if not period_allowed(state,lesson,period,weekday,date=date,_rule=ix.get('_eighthRule',_UNSET_RULE)):return False
+    if lesson.get('classHour') and (period!=lesson['period'] or date is not None and str(date)!=lesson['classHour']['date']):return False
     subject=ix['subjects'].get(lesson.get('subjectId'))
+    if subject and subject.get('unavailable') and unavailable(subject,weekday,period):return False
     if not subject or must_be_first(subject,lesson) and (weekday!=0 or period!=1):return False
     key=date if date is not None else weekday
     for cid in lesson.get('classIds',[]):
@@ -773,6 +794,8 @@ def issues(state: dict, lessons: list[dict], day=None, *, gaps: bool = True) -> 
     group_daily=defaultdict(list)
     for lesson in lessons:
         subject = index["subjects"].get(lesson["subjectId"])
+        if subject and unavailable(subject,lesson['day'],lesson['period']):
+            add('error','subject_unavailable',f"{subject['name']}: предмет запрещён на этом уроке.",[lesson['id']])
         from .class_hours import problems as class_hour_problems
         for text in class_hour_problems(state,lesson,day):add('error','class_hour',text,[lesson['id']])
         if not period_allowed(state,lesson,date=day):

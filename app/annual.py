@@ -89,6 +89,7 @@ def _build_week(state, *, local, seconds):
                     if any(not period_allowed(state,records[0],q,d) for q in range(p,p+duration)):continue
                     if pinned and (d,p)!=(pinned[0]['day'],pinned[0]['period']):continue
                     subject=ix['subjects'][plan['subjectId']]
+                    if any(unavailable(subject,d,q) for q in range(p,p+duration)):continue
                     if must_be_first(subject) and (d!=0 or p!=1 or duration!=1):continue
                     invalid=False
                     for q in range(p,p+duration):

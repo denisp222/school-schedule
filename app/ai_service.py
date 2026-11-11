@@ -1,4 +1,4 @@
-"""DeepSeek/OpenRouter interpreter. Credentials never enter timetable backups."""
+"""DeepSeek/OpenRouter interpreter. Portable credentials require encryption."""
 from __future__ import annotations
 
 import base64

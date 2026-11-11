@@ -52,6 +52,7 @@ const ICONS = {
   lock: '<rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
   file: '<path d="M6 3.5h8l4 4V20H6z"/><path d="M14 3.5V8h4M9 12h6M9 15.5h6"/>',
   mic: '<rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 10.5v1a6.5 6.5 0 0 0 13 0v-1M12 18v3.5M8.5 21.5h7"/>',
+  trash: '<path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/>',
 };
 
 function icon(name, size = 18) {
@@ -313,13 +314,14 @@ function plural(number, one, few, many) {
 
 const NAV = [
   { title: 'День', items: [['day', 'Расписание на день', 'calendar'], ['assistant', 'AI-помощник', 'spark'], ['week', 'Неделя', 'grid']] },
-  { title: 'Работа', items: [['plan', 'Учебный план', 'plan'], ['absences', 'Отсутствия', 'absent'], ['journal', 'Журнал изменений', 'book']] },
+  { title: 'Работа', items: [['plan', 'Учебный план', 'plan'], ['rules', 'Ограничения', 'settings'], ['absences', 'Отсутствия', 'absent'], ['journal', 'Журнал изменений', 'book']] },
   { title: 'Школа', items: [['directory', 'Справочники', 'users'], ['extras', 'Дополнительные занятия', 'calendar'], ['reports', 'Нагрузка', 'chart'], ['settings', 'Настройки', 'settings']] },
   { title: '', items: [['history', 'История и копии', 'history'], ['help', 'Как пользоваться', 'help']] },
 ];
 
 const PAGE_TITLES = {
   assistant: 'AI-помощник',
+  rules: 'Ограничения',
   day: 'Расписание на день', week: 'Неделя', plan: 'Учебный план', absences: 'Отсутствия',
   journal: 'Журнал изменений', directory: 'Справочники', reports: 'Нагрузка',
   extras: 'Дополнительные занятия',
@@ -1096,7 +1098,7 @@ function openLessonSheet(dataset) {
       ${scope==='day' && existing && (existing.classHour || classHourEligible(existing))?`<label class="check"><input type="checkbox" name="classHour" ${existing.classHour?'checked':''}>Классный час (Кл/ч)${existing.classIds.length>1?' · '+esc(namesOf('classes',existing.classIds)):''}</label>`:''}
       <div class="form-grid two">
         <label class="field"><span>Номер урока</span><select class="input" name="period">
-          ${S.data.school.bells.map((bell,index)=>({bell,period:index+1})).filter(slot=>lesson.classHour?slot.period===1:special?slot.period===8:slot.period<=7 || datedEighth).map(slot=>`<option value="${slot.period}" ${slot.period===lesson.period?'selected':''}>${slot.period} · ${esc(slot.bell)}</option>`).join('')}
+          ${S.data.school.bells.map((bell,index)=>({bell,period:index+1})).filter(slot=>lesson.classHour?slot.period===lesson.period:special?slot.period===8:slot.period<=7 || datedEighth).map(slot=>`<option value="${slot.period}" ${slot.period===lesson.period?'selected':''}>${slot.period} · ${esc(slot.bell)}</option>`).join('')}
         </select></label>
         <label class="field"><span>Обменять с уроком этого класса</span><select class="input" name="swapId">
           <option value="">Без обмена</option>
@@ -1163,7 +1165,7 @@ document.addEventListener('keydown', event => {
 async function submitLesson(form, context) {
   const data = new FormData(form);
   if (context.scope==='day' && context.existing && data.has('classHour')!==!!context.existing.classHour) {
-    if(Number(data.get('period'))!==1 || data.get('swapId'))throw new Error('Классный час назначается первым уроком. Сохраните перестановку отдельно.');
+    if(Number(data.get('period'))!==context.existing.period || data.get('swapId'))throw new Error('Сначала сохраните перестановку, затем назначьте классный час на выбранном месте.');
     const result=await api('/lesson/class-hour',{revision:S.revision,date:context.date,lessonId:context.existing.id,enabled:data.has('classHour'),roomIds:formChecked('roomIds')});
     S.data=result.state;S.revision=result.revision;S.day=result.day;closeSheet();render();toast('Сохранено.');return;
   }
@@ -1735,14 +1737,14 @@ function renderDirectory() {
    -------------------------------------------------------------------------- */
 
 function renderAbsences() {
-  const rows = [...S.data.absences].sort((a, b) => String(a.start).localeCompare(String(b.start)));
-  const cards = rows.map((row) => `
+  const rows = [...S.data.absences].sort((a, b) => String(b.start).localeCompare(String(a.start)) || String(a.end).localeCompare(String(b.end)) || nameOf('teachers',a.teacherId).localeCompare(nameOf('teachers',b.teacherId),'ru'));
+  const groups=new Map();for(const row of rows){const key=row.start+'/'+row.end;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(row);}
+  const cards = [...groups.values()].map(items=>`<section class="date-section"><h2>${fmtDate(items[0].start)}${items[0].end!==items[0].start?' – '+fmtDate(items[0].end):''}</h2><div class="absence-list">${items.map((row) => `
     <div class="absence-card">
-      <div class="date">${fmtDate(row.start)}${row.end !== row.start ? `<br>${fmtDate(row.end)}` : ''}</div>
       <div class="who">${esc(nameOf('teachers', row.teacherId))}</div>
       <div class="why">${row.first === row.last ? `${row.first} урок` : `${row.first}–${row.last} уроки`}${row.reason ? ` · ${esc(row.reason)}` : ''}</div>
       <button type="button" class="text-btn" data-action="edit-absence" data-id="${row.id}">Изменить</button>
-    </div>`).join('');
+    </div>`).join('')}</div></section>`).join('');
   return `
     <div class="page">
       ${pageHead('Отсутствия', 'Кто отсутствует', 'Болезнь, приём у врача, курсы. Отсутствие учитывается при подборе замен.', button('Отметить отсутствие', 'absence', 'primary', 'plus'))}
@@ -1884,12 +1886,12 @@ function renderSettings() {
       <div class="section-head" style="margin-top:26px"><h2>Данные</h2><span class="hint">${esc(S.data.school.year)}</span></div>
       <div class="table-card" style="padding:18px 22px;max-width:900px">
         <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <button type="button" class="btn" data-action="download" data-url="/api/backup" data-name="Расписание-резервная-копия.json">${icon('download')}Резервная копия</button>
+          <button type="button" class="btn" data-action="backup-full">${icon('download')}Резервная копия</button>
           <button type="button" class="btn" data-action="import-backup">${icon('history')}Загрузить копию</button>
           <button type="button" class="btn ghost" data-action="nav" data-page="history">${icon('history')}Версии расписания</button>
           <button type="button" class="btn danger" data-action="shutdown-app">${icon('closeCircle')}Завершить приложение</button>
         </div>
-        <p class="muted" style="margin-top:12px;font-size:12px">Копия содержит расписание, справочники, план, отсутствия и журнал. Ключи помощника в копию не входят. При обращении к помощнику выбранному сервису передаются текст просьбы и данные расписания; для платной модели — контекст всей недели.</p>
+        <p class="muted" style="margin-top:12px;font-size:12px">Полная копия переносит данные, ограничения, диалоги, историю, настройки и шаблоны. Подключение AI защищается паролем копии.</p>
       </div>
     </div>`;
 }
@@ -1951,7 +1953,7 @@ function renderHistory() {
   </tr>`).join('');
   return `
     <div class="page">
-      ${pageHead('История и копии', 'Версии', 'Каждое сохранение создаёт версию. Можно вернуться к предыдущей.', `<button type="button" class="btn ghost" data-action="download" data-url="/api/backup" data-name="Расписание-резервная-копия.json">${icon('download')}Резервная копия</button>`)}
+      ${pageHead('История и копии', 'Версии', 'Каждое сохранение создаёт версию. Можно вернуться к предыдущей.', `<button type="button" class="btn ghost" data-action="backup-full">${icon('download')}Резервная копия</button>`)}
       <div class="table-card"><div class="table-scroll"><table class="data">
         <thead><tr><th>Когда</th><th>Действие</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
@@ -2050,7 +2052,7 @@ function render() {
   renderNav();
   renderCrumb();
   const pages = {
-    assistant: renderAssistant, extras: renderExtras,
+    assistant: renderAssistant, extras: renderExtras, rules: renderConstraints,
     day: renderDay, week: renderWeek, plan: renderPlan, directory: renderDirectory,
     absences: renderAbsences, journal: renderJournal, reports: renderReports,
     settings: renderSettings, history: renderHistory, help: renderHelp,
@@ -2327,19 +2329,22 @@ async function importBackup(file) {
   try {
     const text = await file.text();
     const payload = JSON.parse(text);
-    const result = await api('/import', { revision: S.revision, state: payload.state || payload });
-    S.data = result.state;
-    S.revision = result.revision;
-    S.history = null;
-    S.report = null;
-    await loadDay();
-    render();
-    toast('Резервная копия загружена.');
+    const state=payload.state||payload;
+    if(state._portableBackup?.encryptedKeys) {
+      openSheet({title:'Пароль резервной копии',body:'<label class="field"><span>Пароль для переноса подключения AI</span><input class="input" name="password" type="password" minlength="8" maxlength="256" autocomplete="off" required></label>',foot:`${button('Отмена','close-sheet','ghost')}<button class="btn primary" type="submit">Загрузить копию</button>`,submit:form=>restorePortableBackup(state,new FormData(form).get('password'))});
+    } else await restorePortableBackup(state);
   } catch (error) {
     toast(error.message, 'error');
   } finally {
     $('#import-file').value = '';
   }
+}
+
+async function restorePortableBackup(state,password) {
+  const result=await api('/import',{revision:S.revision,state,password});
+  S.data=result.state;S.revision=result.revision;S.history=null;S.report=null;S.preview=null;
+  assistantReset();S.ai.status=null;S.ai.history=null;S.ai.providerChoice='';
+  closeSheet();await loadDay();render();toast('Резервная копия загружена.');
 }
 
 // Close dialogs when clicking the dimmed backdrop.

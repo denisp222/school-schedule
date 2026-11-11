@@ -775,7 +775,7 @@ def convert_class_hour(body: dict):
         cid=old['classIds'][0]
         if enabled:
             event=create(state,day,cid,lesson_id);ensure_subject(state)
-            if 'roomIds' in body:event['roomIds']=deepcopy(body['roomIds'])
+            if 'roomIds' in body and not event['classHour'].get('roomId'):event['roomIds']=deepcopy(body['roomIds'])
             after=[l for l in before if l['id']!=lesson_id]+[event]
         else:after=restore(state,day,lesson_id)
         conditions=[r for r in state.get('assistantConditions',{}).get(day,[]) if not (r['type']=='class_hour' and r['classId'] in old['classIds'])]
@@ -1065,10 +1065,21 @@ def restore(body: dict):
 
 @app.get("/api/backup")
 def backup():
-    from .assistant_history import AssistantHistory
-    state=store.read()['state'];state['_assistantConversations']=AssistantHistory(store).export()
-    payload=json.dumps(state,ensure_ascii=False,indent=2).encode('utf-8')
+    from .portable_backup import export
+    from .assistant_api import connection
+    payload=export(store,DATA,connection())
     return attachment(payload, "application/json", "Расписание-резервная-копия.json")
+
+
+@app.post('/api/backup')
+def full_backup(body:dict):
+    from .portable_backup import export
+    from .assistant_api import connection
+    assistant=connection()
+    if not assistant.request_lock.acquire(blocking=False):raise ValueError('Дождитесь завершения запроса помощника перед созданием копии.')
+    try:payload=export(store,DATA,assistant,password=body.get('password'))
+    finally:assistant.request_lock.release()
+    return attachment(payload,'application/json','Расписание-полная-копия.json')
 
 
 @app.post("/api/import")
@@ -1076,10 +1087,18 @@ def import_backup(body: dict):
     revision = require_revision(body)
     from .assistant_history import AssistantHistory
     raw=deepcopy(body.get('state') or {})
-    rows=AssistantHistory.validate_import(raw.pop('_assistantConversations',[]))
     AssistantHistory(store)
-    state=normalize_state(raw)
-    saved=store.mutate(revision,'Загружена резервная копия',lambda _:state,extra=lambda db:AssistantHistory.restore(db,rows))
+    from .portable_backup import prepare,restore_files,restore_history,backup_before_restore
+    from .assistant_api import connection
+    assistant=connection()
+    if not assistant.request_lock.acquire(blocking=False):raise ValueError('Дождитесь завершения запроса помощника перед загрузкой копии.')
+    try:
+        state,rows,snapshots,files=prepare(raw,body.get('password'),assistant)
+        backup_before_restore(store,DATA)
+        with restore_files(DATA,files):
+            saved=store.mutate(revision,'Загружена резервная копия',lambda _:state,
+                extra=lambda db:restore_history(db,rows,snapshots,state))
+    finally:assistant.request_lock.release()
     return {"revision": saved["revision"], "state": saved["state"]}
 
 
@@ -1183,6 +1202,8 @@ from .voice_api import router as voice_router
 app.include_router(voice_router)
 from .extra_api import router as extras_router
 app.include_router(extras_router)
+from .constraint_api import router as constraints_router
+app.include_router(constraints_router)
 
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 

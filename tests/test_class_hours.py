@@ -110,7 +110,7 @@ def test_assistant_context_and_schema_ground_class_hour_and_require_explicit_req
     context=json.loads(messages[0]['content'].split(ai_planner.CONTEXT_MARKER)[1])
     assert context['classLeaders']=={'one':'a','two':'b'}
     draft,labels=ai_planner.validate_interpretation(raw([action()]),state,DAY,'Для 6а нужен классный час')
-    assert draft['actions']==[action()] and 'Кл/ч' in labels[0]
+    assert draft['actions']==[{**action(),'period':None}] and 'Кл/ч' in labels[0]
     with pytest.raises(ValueError,match='явной просьбе'):
         ai_planner.validate_interpretation(raw([action()]),state,DAY,'Учитель отсутствует')
 
@@ -197,7 +197,7 @@ def test_class_hour_room_search_optimizes_original_pupil_moves():
     next(l for l in work['days'][DAY] if l.get('classHour'))['roomIds']=['r3']
     result=solve_day(work,DAY,baseline=lessons_for_day(state,DAY),conditions=actions,allow_room_changes=True)
     assert result and result['stats']['moved']==1
-    assert next(l for l in result['after'] if l.get('classHour'))['roomIds'][0] in ('r1','r2')
+    assert next(l for l in result['after'] if l.get('classHour'))['roomIds']==['r1']
 
 
 def test_saved_class_hour_survives_another_absence_request():
@@ -215,6 +215,7 @@ def test_changing_leadership_does_not_rewrite_past_class_hours(client):
     assert response.status_code==200,response.text
     state=response.json()['state']
     assert next(l for l in state['days'][DAY] if l.get('classHour'))['teacherIds']==['a']
+    next(t for t in state['teachers'] if t['id']=='c')['homeroomRoomId']='r1'
     assert class_hours.create(state,'2026-11-18','one')['teacherIds']==['c']
 
 

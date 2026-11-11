@@ -46,6 +46,15 @@ def conversations(offset:int=0):
 def conversation(thread_id:str):return history().get(thread_id)
 
 
+@router.post('/conversations/{thread_id}/delete')
+def delete_conversation(thread_id:str):
+    assistant=connection()
+    if not assistant.request_lock.acquire(blocking=False):raise ValueError('Дождитесь завершения запроса помощника перед удалением диалога.')
+    try:history().delete(thread_id)
+    finally:assistant.request_lock.release()
+    return {'deleted':True}
+
+
 def remember(bucket, value):
     token=uuid4().hex
     bucket[token]=value
@@ -181,7 +190,9 @@ def class_hour_preview(body: dict):
         raise ValueError('Выберите классы для классного часа.')
     actions=[a for a in current['state'].get('assistantConditions',{}).get(day,[])
              if not (a['type']=='class_hour' and a['classId'] in classes)]
-    actions += [{'type':'class_hour','classId':c,'lessonId':None} for c in classes]
+    from .schemas import integer
+    period=integer(body.get('period',1),'Урок классного часа',minimum=1,maximum=7)
+    actions += [{'type':'class_hour','classId':c,'lessonId':None,'period':period} for c in classes]
     raw={'date':day,'reply':'Классный час','questions':[],'unsupported':[],'actions':actions}
     draft,_=ai_planner.validate_interpretation(raw,current['state'],day,'Назначить классный час первым уроком')
     results=ai_planner.variants(current['state'],day,draft['actions']);snapshot(body)

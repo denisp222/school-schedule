@@ -77,6 +77,7 @@ class ClassHour(StrictModel):
     classId: str
     lessonId: str | None = None
     replaceLessonId: Annotated[str,Field(min_length=1)] | None = None
+    period: Annotated[StrictInt,Field(ge=1,le=7)] | None = None
 
 
 class AllowClassGaps(StrictModel):
@@ -129,6 +130,7 @@ class Interpretation(StrictModel):
 
 SYSTEM = '''Ты помощник завуча. Ты ТОЛЬКО переводишь просьбу в условия на ОДИН выбранный день.
 Расписание рассчитывает отдельный проверяемый алгоритм. Никогда не утверждай, что изменил или сохранил его.
+Постоянные ограничения находятся в permanentAvailability. Они действуют во всех вариантах. firstMonday=false у предмета отменяет обычное закрепление «Разговоров о важном»; по умолчанию они идут только первым уроком понедельника. Постоянные правила меняются в разделе «Ограничения», а не действием на один день.
 Ответ строго JSON: {"date":"YYYY-MM-DD","reply":"короткое пояснение на русском",
 "questions":[],"unsupported":[],"actions":[]}.
 Разрешённые actions (все поля обязательны, никаких дополнительных полей):
@@ -144,11 +146,11 @@ SYSTEM = '''Ты помощник завуча. Ты ТОЛЬКО перевод
 Если пользователь допускает другой класс без указания, предложи подходящий существующий урок того же предмета у доступного учителя, объясни выбор в reply. Если подходящих занятий нет, задай вопрос. Не назначай постороннего учителя.
 При выборе второго класса предпочитай ту же параллель: например, 9е с 9г или 9д. Разный возраст не выбирай без необходимости; если подходит только другой возраст, уточни это у пользователя.
 «Разговоры о важном», включая совместные, разрешены ТОЛЬКО первым уроком понедельника. Исключений по времени нет.
-{"type":"class_hour","classId":"id","lessonId":null,"replaceLessonId":null} назначить КЛАССНЫЙ ЧАС (Кл/ч) первым уроком выбранной даты у классного руководителя из classLeaders. Применяется только по явной просьбе пользователя, отдельно для каждого указанного класса. Для всех классов сформируй отдельное действие каждому.
+{"type":"class_hour","classId":"id","lessonId":null,"replaceLessonId":null,"period":1} назначить КЛАССНЫЙ ЧАС (Кл/ч) на выбранный урок (period от 1 до 7, по умолчанию 1) выбранной даты у классного руководителя из classLeaders, в его кабинете classLeaderRooms. Классный час НЕ ограничен первым уроком. Применяется только по явной просьбе пользователя, отдельно для каждого указанного класса. Для всех классов сформируй отдельное действие каждому.
 Если пользователь просит заменить КОНКРЕТНЫЙ урок, например физкультуру 8г с любого номера, классным часом первым уроком, укажи ID физкультуры в replaceLessonId. Программа уберёт именно этот урок и поставит Кл/ч первым; прежний первый предмет останется и будет переставлен. Не создавай для этого pin_lesson или cancel_lesson: это ОДНО действие class_hour. Совмещай его с отсутствиями учителей и классными часами остальных классов в одном ответе, это поддерживается.
 Если классный руководитель отсутствует, его Кл/ч отменяется с пояснением, остальные условия сохраняются. Это не unsupported.
 {"type":"allow_class_gaps"} — резервное разрешение окон в выбранный день. Не добавляй его самостоятельно: программа сначала ищет без окон и только при неудаче показывает резервный вариант с предупреждением. Ранее сохранённое разрешение можно повторить.
-Обычный первый урок заменяется классным часом только на эту дату. Учебный план и базовая неделя не меняются. Спаренный первый урок не отменяется наполовину: блок сохраняется для перестановки целиком. Если просят переименовать конкретный подходящий урок, укажи его lessonId: это разрешено только для первого урока целого класса у его классного руководителя. Если руководитель неизвестен, попроси заполнить карточку класса. Если выбраны два класса ОДНОГО классного руководителя, они автоматически проводят ОДИН совместный классный час: у учителя нет двух отдельных занятий одновременно. Классы разных руководителей так не объединяются.
+Обычный урок на выбранном месте заменяется классным часом только на эту дату. Учебный план и базовая неделя не меняются. Спаренный урок не отменяется наполовину: блок сохраняется для перестановки целиком. Если просят переименовать конкретный подходящий урок, укажи его lessonId и period: это разрешено для любого урока целого класса у его классного руководителя. Если руководитель неизвестен, попроси заполнить карточку класса. Если выбраны два класса ОДНОГО классного руководителя на одном уроке, они автоматически проводят ОДИН совместный классный час: у учителя нет двух отдельных занятий одновременно. Классы разных руководителей так не объединяются.
 Если пользователь прямо просит пропустить/отменить «Разговоры о важном», используй cancel_lesson для этого урока, не переноси его позже.
 Если класс начинает со второго и учитель РОВ отсутствует, этот урок отменится, а не переместится на другой номер.
 {"type":"allow_eighth","lessonId":"id"} явное разрешение восьмого урока ТОЛЬКО этому занятию на выбранную дату. Добавляй только если пользователь прямо разрешил восьмой урок; для точного переноса добавь pin_lesson с period=8. Не предлагай исключение сам ради удобства расчёта.
@@ -314,7 +316,7 @@ def ground_joint_refusal(raw,state,day,message):
 
 
 def messages_for(state, day, message, history, *, full_context=False):
-    from .class_hours import leader_map
+    from .class_hours import leader_map,leader_room
     if not isinstance(message, str) or not message.strip() or len(message) > 4000:
         raise AssistantError('Напишите просьбу длиной до 4000 символов.')
     if not isinstance(history, list) or len(history) > 10:
@@ -333,6 +335,8 @@ def messages_for(state, day, message, history, *, full_context=False):
     def catalog(kind):return [{k:r[k] for k in ('id','name')} for r in state[kind] if not focused or r['id'] in refs[kind]]
     context = {'selectedDate': day, 'weekday': parse_date(day).weekday(),
                'classLeaders':leader_map(state),
+               'classLeaderRooms':{t['id']:leader_room(state,t['id']) for t in state['teachers'] if leader_room(state,t['id'])},
+               'permanentAvailability':{kind:[{k:r[k] for k in ('id','unavailable','maxDaily','maxDays','firstMonday','pairedTechnology') if k in r} for r in state[kind]] for kind in ('teachers','classes','rooms','subjects')},
                'lessonScope':'Full selected day; complete school context follows' if full_context else 'Only lessons of teachers and classes mentioned in this conversation',
                'teachers': catalog('teachers'),
                'classes': catalog('classes'),
@@ -355,12 +359,12 @@ def messages_for(state, day, message, history, *, full_context=False):
             'schoolRules':{'weekdays':5,'shifts':1,'lastNormalPeriod':7,
                            'eighthPeriodException':state['school'].get('eighthPeriodException'),
                            'noClassGaps':True,'noNewTeacherGaps':False,'crossDayMovesAllowed':False,
-                           'pairedLessonsConsecutive':True,'rovWeekday':0,'rovPeriod':1,
+                           'pairedLessonsConsecutive':True,'rovWeekday':0 if any(must_be_first(s) for s in state['subjects']) else None,'rovPeriod':1 if any(must_be_first(s) for s in state['subjects']) else None,
                            'bells':state['school']['bells']},
-            'teachers':records('teachers',('id','name','subjectIds','weeklyTarget','extraLimit','maxDaily','maxDays','unavailable','homeroom')),
+            'teachers':records('teachers',('id','name','subjectIds','weeklyTarget','extraLimit','maxDaily','maxDays','unavailable','homeroom','homeroomRoomId')),
             'classes':records('classes',('id','name','size','firstPeriod','maxDaily','unavailable','groupNames','groupRoles','groupSizes')),
             'rooms':records('rooms',('id','name','capacity','subjectIds','teacherId','classId','unavailable')),
-            'subjects':records('subjects',('id','name','short','difficulty','preferredPeriods')),
+            'subjects':records('subjects',('id','name','short','difficulty','preferredPeriods','unavailable','firstMonday','pairedTechnology')),
             'weeklyPlan':records('plan',('id','classIds','teacherIds','subjectId','roomIds','hours','maxPerDay','doubleLessons')),
             'baseWeek':full_lessons(state['baseLessons']),
             'datedOverrides':{d:full_lessons(state['days'][d]) for d in dates if d in state['days']},
@@ -388,7 +392,7 @@ def compose_class_hour_steps(raw,state,day,request_text):
     consumed=set()
     for row in result['actions']:
         if row.get('type')!='class_hour' or row.get('lessonId') or row.get('replaceLessonId'):continue
-        pins=[p for p in result['actions'] if p.get('type')=='pin_lesson' and p.get('period')==1
+        pins=[p for p in result['actions'] if p.get('type')=='pin_lesson' and p.get('period')==(row.get('period') or 1)
               and lessons.get(p.get('lessonId'),{}).get('classIds')==[row.get('classId')]]
         if len(pins)==1:
             row['replaceLessonId']=pins[0]['lessonId'];consumed.add(pins[0]['lessonId'])
@@ -443,9 +447,9 @@ def validate_interpretation(raw, state, day, request_text=''):
                       for r in state.get('assistantConditions',{}).get(day,[]))
             if not saved and not re.search(r'классн\w*\s+час|кл\s*/\s*ч',request_text.lower()):
                 raise AssistantError('Классный час назначается только по вашей явной просьбе.')
-            try:event=create(state,day,action.classId,action.lessonId,action.replaceLessonId)
+            try:event=create(state,day,action.classId,action.lessonId,action.replaceLessonId,action.period)
             except ValueError as error:raise AssistantError(str(error)) from None
-            labels.append(ix['classes'][action.classId]['name']+': Кл/ч первым уроком, '+ix['teachers'][event['teacherIds'][0]]['name'])
+            labels.append(ix['classes'][action.classId]['name']+f": Кл/ч {event['period']}-м уроком, "+ix['teachers'][event['teacherIds'][0]]['name'])
             if action.replaceLessonId:
                 source=sources[action.replaceLessonId]
                 labels[-1]+='; вместо '+ix['subjects'][source['subjectId']]['name']+' ('+str(source['period'])+'-й урок)'
@@ -645,8 +649,8 @@ def condition_problems(state, day, actions, result):
             matches=[l for l in after if l['id']==expected['id']]
             from .class_hours import cancelled_for_absence
             if not matches and cancelled_for_absence(checked,expected,day):continue
-            if len(matches)!=1 or matches[0].get('classHour')!=expected['classHour'] or problems(checked,matches[0],day):
-                errors.append('Не выполнено назначение классного часа у классного руководителя первым уроком.')
+            if len(matches)!=1 or matches[0]['period']!=expected['period'] or matches[0].get('classHour')!=expected['classHour'] or problems(checked,matches[0],day):
+                errors.append('Не выполнено назначение классного часа у классного руководителя на выбранном уроке.')
         if row['type'] in ('class_day','group_day'):
             overridden={a['groupIndex'] for a in actions if a['type']=='group_day' and a['classId']==row['classId']}
             for group in ([row['groupIndex']] if row['type']=='group_day' else [g for g in (0,1) if g not in overridden]):
@@ -710,7 +714,7 @@ def _variants(state, day, actions, limit=3):
         result['stats']['classHoursCancelled']=sum(len(l['classIds']) for l in cancelled_hours)
         for lesson in cancelled_hours:
             names={c['id']:c['name'] for c in state['classes']}
-            warning='Классный час '+', '.join(names[c] for c in lesson['classIds'])+' отменён: классный руководитель недоступен первым уроком.'
+            warning='Классный час '+', '.join(names[c] for c in lesson['classIds'])+f" отменён: классный руководитель недоступен {lesson['period']}-м уроком."
             if warning not in result['warnings']:result['warnings'].append(warning)
         if any(l.get('classHour') and len(l['classIds'])>1 for l in result['after']):
             result['search']={**result.get('search',{}),'primaryProven':False}

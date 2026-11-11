@@ -50,6 +50,16 @@ class AssistantHistory:
         return {**dict(zip(('id','date','title','updated'),thread)),
                 'turns':[{'id':r[0],'created':r[1],'request':r[2],'response':json.loads(r[3]) if r[3] else None,'error':r[4],'status':r[5]} for r in rows]}
 
+    def delete(self,thread_id):
+        if not isinstance(thread_id,str) or not re.fullmatch('[a-f0-9]{32}',thread_id):
+            raise ValueError('Диалог не найден.')
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute('SELECT 1 FROM assistant_threads WHERE id=?',(thread_id,)).fetchone():
+                raise ValueError('Диалог уже удалён.')
+            db.execute('DELETE FROM assistant_turns WHERE thread_id=?',(thread_id,))
+            db.execute('DELETE FROM assistant_threads WHERE id=?',(thread_id,))
+
     def saved_at(self):
         with self.store.connect() as db:return db.execute('SELECT MAX(updated) FROM assistant_threads').fetchone()[0]
 

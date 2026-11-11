@@ -31,6 +31,7 @@
 !/tests/test_class_hours.py
 !/tests/test_updates.py
 !/tests/test_composite_requests.py
+!/tests/test_constraints_and_transfer.py
 /tools/*
 !/tools/check_repository.py
 !/tools/lock_requirements.py
