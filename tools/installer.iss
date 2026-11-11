@@ -105,7 +105,7 @@ begin
   end;
   if CurStep = ssPostInstall then begin
     KeepVoice := False;
-    if ExpandConstant('{param:UPDATE|0}') = '1' then begin
+    if (ExpandConstant('{param:UPDATE|0}') = '1') or ({#VoiceAvailable} = 0) then begin
       if LoadStringFromFile(ExpandConstant('{app}\installed-components.json'), ExistingComponents) then
         KeepVoice := (Pos('true', String(ExistingComponents)) > 0) and FileExists(ExpandConstant('{app}\_internal\assets\speech-whisper\model.bin'));
     end;
