@@ -186,6 +186,7 @@ def install_script(installer, folder, pid, expected_hash):
     """Separate Windows process waits for all executable locks to be released."""
     # No network access or school paths are passed to this helper.
     return f"""$ErrorActionPreference = 'Stop'
+$env:PSModulePath = $env:SystemRoot + '\\System32\\WindowsPowerShell\\v1.0\\Modules'
 $setup = {ps_quote(installer)}
 $folder = {ps_quote(folder)}
 Wait-Process -Id {int(pid)} -ErrorAction SilentlyContinue

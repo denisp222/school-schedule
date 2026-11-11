@@ -55,7 +55,7 @@ def main():
         bootstrap=VENDOR/'MicrosoftEdgeWebView2Setup.exe'
         fetch(client,'https://go.microsoft.com/fwlink/p/?LinkId=2124703',bootstrap)
         for path,publisher in [(compiler,'Pyrsys B.V.'),(bootstrap,'Microsoft Corporation')]:
-            command="$s=Get-AuthenticodeSignature -LiteralPath '"+str(path).replace("'","''")+"'; if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notlike '*"+publisher+"*') { throw 'Invalid official installer signature' }"
+            command="$env:PSModulePath=$env:SystemRoot+'\\System32\\WindowsPowerShell\\v1.0\\Modules'; $ErrorActionPreference='Stop'; $s=Get-AuthenticodeSignature -LiteralPath '"+str(path).replace("'","''")+"'; if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notlike '*"+publisher+"*') { throw 'Invalid official installer signature' }"
             subprocess.run(['powershell','-NoProfile','-NonInteractive','-Command',command],check=True)
         inno=VENDOR/'inno-portable'
         if not (inno/'ISCC.exe').exists():
