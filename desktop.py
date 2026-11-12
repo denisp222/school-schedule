@@ -80,16 +80,10 @@ def main():
             kernel.CloseHandle(mutex)
             return
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('School.Raspisanie.2026')
-    if sys.platform=='win32' and not no_window and (folder/'installed.json').is_file():
-        try:
-            from app.updates import startup_update
-            if startup_update(data,resources,folder):
-                if mutex:
-                    ctypes.windll.kernel32.CloseHandle.argtypes=[ctypes.c_void_p]
-                    ctypes.windll.kernel32.CloseHandle(mutex)
-                return
-        except Exception:
-            logging.exception('Update postponed; opening current version')
+    # Always open the working timetable first. Network checks and explicit
+    # approval are handled by the main UI after it has finished loading.
+    from app.updates import preserve_templates
+    preserve_templates(data,resources)
     port,running=choose_port(data);url=f'http://127.0.0.1:{port}'
     server=None;thread=None
     if not running:
@@ -113,6 +107,8 @@ def main():
                 server.should_exit=True
                 close()
             app.state.shutdown=shutdown
+            from app.update_api import UpdateManager
+            app.state.update_manager=UpdateManager(data,resources,folder,shutdown)
     try:run_window(url,data,resources,on_ready)
     finally:
         if server:server.should_exit=True

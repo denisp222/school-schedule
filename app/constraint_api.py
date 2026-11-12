@@ -38,7 +38,7 @@ def availability(body:dict):
                     raise ValueError('Выберите кабинет классного руководителя.')
                 record['homeroomRoomId']=room
         if kind=='classes':record['firstPeriod']=integer(body.get('firstPeriod',record.get('firstPeriod',1)),'Самый ранний урок',minimum=1,maximum=7)
-    saved=server.store.mutate(revision,'Изменены постоянные ограничения',change)
+    saved=server.project_store().mutate(revision,'Изменены постоянные ограничения',change)
     return saved
 
 
@@ -52,7 +52,7 @@ def general(body:dict):
         for subject in state['subjects']:
             if is_rov(subject):subject['firstMonday']=body['rovFirst']
             if is_technology(subject):subject['pairedTechnology']=body['technologyPairs']
-    return server.store.mutate(revision,'Изменены общие правила школы',change)
+    return server.project_store().mutate(revision,'Изменены общие правила школы',change)
 
 
 @router.post('/eighth')
@@ -69,4 +69,4 @@ def eighth(body:dict):
         from .model import period_allowed
         if any(not period_allowed(state,l) for l in state['baseLessons']):
             raise ValueError('В базовой неделе ещё стоит прежний восьмой урок. Сначала снимите его с расписания.')
-    return server.store.mutate(revision,'Изменено исключение восьмого урока',change)
+    return server.project_store().mutate(revision,'Изменено исключение восьмого урока',change)

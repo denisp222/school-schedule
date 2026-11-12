@@ -63,6 +63,11 @@ DATA.mkdir(parents=True, exist_ok=True)
 store = Store(DATA / "schedule.sqlite3", initial_state)
 app = FastAPI(title="Расписание", docs_url=None, redoc_url=None, openapi_url=None)
 
+def project_store():
+    from .annual_workspace import workspace,DraftStore
+    return DraftStore(store) if workspace.get()=='draft' else store
+
+
 
 def school_today() -> str:
     day = date.today()
@@ -111,7 +116,16 @@ async def local_only(request: Request, call_next):
             return JSONResponse({"detail": "Ожидается JSON."}, status_code=415)
         if int(request.headers.get("content-length", "0") or 0) > 30_000_000:
             return JSONResponse({"detail": "Файл слишком большой."}, status_code=413)
-    response = await call_next(request)
+    from .annual_workspace import workspace,allowed_path
+    draft=request.headers.get('x-schedule-workspace')=='draft'
+    if draft and (not allowed_path(request.url.path) or request.url.path.startswith('/api/entity/absences')):
+        return JSONResponse({'detail':'Закройте редактор базового расписания для этого действия.'},status_code=422)
+    if draft and (request.url.path=='/api/lesson' or request.url.path.startswith('/api/lesson/')) and request.method=='POST':
+        body=await request.json()
+        if body.get('scope')!='base':return JSONResponse({'detail':'В черновике редактируется только базовая неделя.'},status_code=422)
+    token=workspace.set('draft' if draft else 'live')
+    try:response = await call_next(request)
+    finally:workspace.reset(token)
     # Windows registry associations can override mimetypes.guess_type (for
     # example, an editor registers .js as text/plain). Chromium then refuses
     # every UI script under nosniff, leaving only the loading skeleton.
@@ -180,7 +194,7 @@ def health():
 
 @app.get("/api/state")
 def get_state():
-    snapshot = store.read()
+    snapshot = project_store().read()
     return {
         "revision": snapshot["revision"],
         "state": snapshot["state"],
@@ -214,7 +228,7 @@ def save_update_settings(body: dict):
 @app.get('/api/bootstrap')
 def bootstrap(date: str | None=None):
     from .distribution import voice_available
-    snapshot=store.read()
+    snapshot=project_store().read()
     day=require_day(date) if date else school_today()
     return {**snapshot,'today':school_today(),'day':_day_payload(snapshot['state'],day),
             'features':{'voice':voice_available()},'server':{'version':VERSION}}
@@ -222,7 +236,7 @@ def bootstrap(date: str | None=None):
 
 @app.post('/api/save')
 def save_project(body: dict):
-    saved=store.mutate(require_revision(body),'Сохранено вручную',lambda state:state)
+    saved=project_store().mutate(require_revision(body),'Сохранено вручную',lambda state:state)
     return {'revision':saved['revision'],'savedAt':saved['savedAt']}
 
 
@@ -284,13 +298,13 @@ def _day_payload(state: dict, day: str) -> dict:
 @app.get("/api/day/{day}")
 def get_day(day: str):
     day = require_day(day)
-    return _day_payload(store.read()["state"], day)
+    return _day_payload(project_store().read()["state"], day)
 
 
 @app.get("/api/week/{day}")
 def get_week(day: str):
     day = require_day(day)
-    state = store.read()["state"]
+    state = project_store().read()["state"]
     days = []
     for key in week_dates(parse_date(day)):
         current = lessons_for_day(state, key)
@@ -385,7 +399,7 @@ def _repair_variants(state: dict, day: str, allow_other: bool, reason: str,
 @app.post("/api/repair")
 def repair_preview(body: dict):
     day = require_day(body.get("date", ""))
-    snapshot = store.read()
+    snapshot = project_store().read()
     if body.get('revision') is not None and require_revision(body)!=snapshot['revision']:
         raise Conflict('Данные изменились. Обновите расписание перед подбором.')
     return _repair_variants(
@@ -433,7 +447,7 @@ def repair_apply(body: dict):
         apply_repair(state, result, reason)
         return state
 
-    saved = store.mutate(revision, label, change)
+    saved = project_store().mutate(revision, label, change)
     return {"revision": saved["revision"], "state": saved["state"], "day": _day_payload(saved["state"], day)}
 
 
@@ -449,7 +463,7 @@ KIND_LABELS = {
 
 
 def entity_label(kind: str, record: dict) -> str:
-    state = store.read()["state"]
+    state = project_store().read()["state"]
     if kind == "absences":
         teacher = next((t for t in state["teachers"] if t["id"] == record.get("teacherId")), None)
         return f"Отсутствие: {teacher['name'] if teacher else 'учитель'}"
@@ -578,7 +592,7 @@ def upsert(kind: str, body: dict):
             validate_state(state)
         return state
 
-    saved = store.mutate(revision, entity_label(kind, raw), change)
+    saved = project_store().mutate(revision, entity_label(kind, raw), change)
     return {"revision": saved["revision"], "state": saved["state"], "id": ident}
 
 
@@ -603,9 +617,9 @@ def delete_entity(kind: str, body: dict):
         state[kind] = [x for x in state[kind] if x["id"] != ident]
         return state
 
-    state = store.read()["state"]
+    state = project_store().read()["state"]
     existing = next((x for x in state.get(kind, []) if x["id"] == ident), {"id": ident})
-    saved = store.mutate(revision, "Удаление — " + entity_label(kind, existing), change)
+    saved = project_store().mutate(revision, "Удаление — " + entity_label(kind, existing), change)
     return {"revision": saved["revision"], "state": saved["state"]}
 
 
@@ -683,7 +697,8 @@ def _commit_day(state: dict, day: str, before: list[dict], after: list[dict], re
     after = sorted(after, key=lambda lesson: (lesson["period"], lesson["id"]))
     if day not in state["dayBases"]:
         state["dayBases"][day] = base_for_day(state, day)
-    annual = [l for l in state['baseLessons'] if l['day'] == parse_date(day).weekday()]
+    from .annual_workspace import effective_week
+    annual = [l for l in effective_week(state,day) if l['day'] == parse_date(day).weekday()]
     if _same_stored_lessons(after,annual):
         state["days"].pop(day, None)
         state["dayBases"].pop(day, None)
@@ -755,7 +770,7 @@ def edit_lesson(body: dict):
             _commit_day(state, day, before, after, str(body.get("reason") or "Ручная правка"))
         return state
 
-    saved = store.mutate(revision, f"Изменение занятия: {day}", change)
+    saved = project_store().mutate(revision, f"Изменение занятия: {day}", change)
     return {"revision": saved["revision"], "state": saved["state"], "day": _day_payload(saved["state"], day)}
 
 
@@ -783,7 +798,7 @@ def convert_class_hour(body: dict):
         state.setdefault('assistantConditions',{})[day]=conditions
         _guard_change(state,before,after,day,'day')
         _commit_day(state,day,before,after,'Назначен классный час' if enabled else 'Восстановлен урок вместо классного часа')
-    saved=store.mutate(revision,'Классный час: '+day,change)
+    saved=project_store().mutate(revision,'Классный час: '+day,change)
     return {**saved,'day':_day_payload(saved['state'],day)}
 
 
@@ -795,7 +810,7 @@ def move_lesson(body: dict):
     period = integer(body.get('period'),'Номер урока',minimum=1,maximum=8)
     if not lesson_id:
         raise ValueError("Не указан урок.")
-    if not (1 <= period <= len(store.read()["state"]["school"]["bells"])):
+    if not (1 <= period <= len(project_store().read()["state"]["school"]["bells"])):
         raise ValueError("Некорректный номер урока.")
 
     def change(state):
@@ -815,13 +830,13 @@ def move_lesson(body: dict):
         else:_commit_day(state, day, before, after, "Перетаскивание урока")
         return state
 
-    saved = store.mutate(revision, "Перетаскивание урока", change)
+    saved = project_store().mutate(revision, "Перетаскивание урока", change)
     return {"revision": saved["revision"], "state": saved["state"], "day": _day_payload(saved["state"], day)}
 
 
 @app.post('/api/lesson/targets')
 def lesson_targets(body: dict):
-    snapshot=store.read()
+    snapshot=project_store().read()
     if require_revision(body)!=snapshot['revision']:raise Conflict('Расписание изменилось. Обновите страницу перед переносом.')
     state=snapshot['state'];day=require_day(body.get('date',''))
     scope=body.get('scope','day')
@@ -872,7 +887,7 @@ def swap_lessons(body: dict):
         else:_commit_day(state, day, before, after, "Обмен уроками перетаскиванием")
         return state
 
-    saved = store.mutate(revision, "Обмен уроками", change)
+    saved = project_store().mutate(revision, "Обмен уроками", change)
     return {"revision": saved["revision"], "state": saved["state"], "day": _day_payload(saved["state"], day)}
 
 
@@ -895,7 +910,8 @@ def reset_day(body: dict):
         baselines = {key: base_for_day(state, key) for key in connected}
         for key, baseline in baselines.items():
             state.get('assistantConditions',{}).pop(key,None)
-            annual = [l for l in state['baseLessons'] if l['day'] == parse_date(key).weekday()]
+            from .annual_workspace import effective_week
+            annual = [l for l in effective_week(state,key) if l['day'] == parse_date(key).weekday()]
             if _same_stored_lessons(baseline,annual):
                 state['days'].pop(key, None)
                 state['dayBases'].pop(key, None)
@@ -907,7 +923,7 @@ def reset_day(body: dict):
                 row['active'] = False
         return state
 
-    saved = store.mutate(revision, f"Возврат к базовому дню: {day}", change)
+    saved = project_store().mutate(revision, f"Возврат к базовому дню: {day}", change)
     return {"revision": saved["revision"], "state": saved["state"], "day": _day_payload(saved["state"], day)}
 
 
@@ -918,13 +934,14 @@ def reset_day(body: dict):
 @app.post('/api/week/build')
 def build_annual_week(body: dict):
     from .annual import build_week
-    snapshot=store.read()
+    snapshot=project_store().read()
     if require_revision(body)!=snapshot['revision']:
         raise Conflict('Данные изменились. Обновите расписание.')
     result=build_week(snapshot['state'])
     if result['status']=='ok':
         token=uuid.uuid4().hex
-        week_previews[token]={'revision':snapshot['revision'],'lessons':result['lessons']}
+        from .annual_workspace import workspace
+        week_previews[token]={'revision':snapshot['revision'],'lessons':result['lessons'],'workspace':workspace.get()}
         return {**result,'previewId':token,'revision':snapshot['revision'],
                 'changes':diff_lessons(snapshot['state']['baseLessons'],result['lessons'])}
     return result
@@ -934,20 +951,21 @@ def build_annual_week(body: dict):
 def apply_annual_week(body: dict):
     revision=require_revision(body)
     preview=week_previews.get(body.get('previewId'))
-    if not preview or preview['revision']!=revision:
+    from .annual_workspace import workspace
+    if not preview or preview['revision']!=revision or preview.get('workspace','live')!=workspace.get():
         raise Conflict('Вариант устарел. Составьте неделю заново.')
     def change(state):
         for day in state['days']:
             if day not in state['dayBases']:state['dayBases'][day]=base_for_day(state,day)
         state['baseLessons']=deepcopy(preview['lessons'])
         return state
-    saved=store.mutate(revision,'Составлена полная базовая неделя по учебному плану',change)
+    saved=project_store().mutate(revision,'Составлена полная базовая неделя по учебному плану',change)
     return {'revision':saved['revision'],'state':saved['state']}
 
 
 @app.get("/api/plan/check")
 def plan_check():
-    state = store.read()["state"]
+    state = project_store().read()["state"]
     return {"report": plan_report(state), "issues": issues(state, state["baseLessons"], gaps=True)}
 
 
@@ -956,14 +974,14 @@ def fill_missing(body: dict):
     revision = require_revision(body)
     apply = bool(body.get("apply"))
     if not apply:
-        snapshot = store.read()
+        snapshot = project_store().read()
         return fill_missing_hours(snapshot["state"], apply=False)
 
     def change(state):
         result = fill_missing_hours(state, apply=True)
         return result.get("state") or state
 
-    saved = store.mutate(revision, "Достроены недостающие часы учебного плана", change)
+    saved = project_store().mutate(revision, "Достроены недостающие часы учебного плана", change)
     return {"revision": saved["revision"], "state": saved["state"]}
 
 
@@ -974,7 +992,7 @@ def fill_missing(body: dict):
 @app.get("/api/reports/{day}")
 def reports(day: str):
     day = require_day(day)
-    state = store.read()["state"]
+    state = project_store().read()["state"]
     week = week_lessons(state, day)
     actual = Counter(t for l in week for t in l["teacherIds"])
     plan = plan_report(state)
@@ -1021,7 +1039,7 @@ def journal_update(body: dict):
         row["payPercent"] = percent
         return state
 
-    saved = store.mutate(revision, "Отметка проведения", change)
+    saved = project_store().mutate(revision, "Отметка проведения", change)
     return {"revision": saved["revision"], "state": saved["state"]}
 
 
@@ -1046,20 +1064,20 @@ def settings(body: dict):
         state["school"] = new
         return state
 
-    saved = store.mutate(revision, "Настройки школы", change)
+    saved = project_store().mutate(revision, "Настройки школы", change)
     return {"revision": saved["revision"], "state": saved["state"]}
 
 
 @app.get("/api/history")
 def history():
-    return {"history": store.history()}
+    return {"history": project_store().history()}
 
 
 @app.post("/api/history/restore")
 def restore(body: dict):
     revision = require_revision(body)
-    snapshot = store.snapshot(integer(body.get('id'),'Номер версии',minimum=1))
-    saved = store.mutate(revision, f"Восстановлена версия {body['id']}", lambda _: normalize_state(snapshot))
+    snapshot = project_store().snapshot(integer(body.get('id'),'Номер версии',minimum=1))
+    saved = project_store().mutate(revision, f"Восстановлена версия {body['id']}", lambda _: normalize_state(snapshot))
     return {"revision": saved["revision"], "state": saved["state"]}
 
 
@@ -1096,7 +1114,7 @@ def import_backup(body: dict):
         state,rows,snapshots,files=prepare(raw,body.get('password'),assistant)
         backup_before_restore(store,DATA)
         with restore_files(DATA,files):
-            saved=store.mutate(revision,'Загружена резервная копия',lambda _:state,
+            saved=project_store().mutate(revision,'Загружена резервная копия',lambda _:state,
                 extra=lambda db:restore_history(db,rows,snapshots,state))
     finally:assistant.request_lock.release()
     return {"revision": saved["revision"], "state": saved["state"]}
@@ -1127,7 +1145,7 @@ def export(audience: str, day: str, names: int = 1, preview: int = 0,mode: str='
     if audience not in ("students", "teachers"):
         raise ValueError("Неизвестный вид экспорта.")
     day = require_day(day)
-    state = store.read()["state"]
+    state = project_store().read()["state"]
     try:
         data = export_docx(state, day, audience, update_names=bool(names),mode=mode)
     except ValueError as exc:
@@ -1147,7 +1165,7 @@ def _csv_safe(value) -> str:
 
 @app.get("/api/report-csv/{kind}")
 def report_csv(kind: str, day: str | None = None):
-    state = store.read()["state"]
+    state = project_store().read()["state"]
     out = io.StringIO()
     writer = csv.writer(out, delimiter=";")
     names = {k: {x["id"]: x["name"] for x in state[k]} for k in ("teachers", "classes", "subjects", "rooms")}
@@ -1204,6 +1222,10 @@ from .extra_api import router as extras_router
 app.include_router(extras_router)
 from .constraint_api import router as constraints_router
 app.include_router(constraints_router)
+from .annual_workspace import router as annual_router
+app.include_router(annual_router)
+from .update_api import router as update_router
+app.include_router(update_router)
 
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 

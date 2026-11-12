@@ -81,7 +81,11 @@ def main():
         old=subprocess.Popen([sys.executable,'-c','import time;time.sleep(1)'],env=env)
         script=install_script(installer,target,old.pid,manifest['sha256']).replace("'/UPDATE=1'","'/UPDATE=1', '/QA=1'")
         encoded=base64.b64encode(script.encode('utf-16le')).decode('ascii')
-        helper=subprocess.Popen(['powershell','-NoProfile','-NonInteractive','-WindowStyle','Hidden','-EncodedCommand',encoded],env=env)
+        # Reproduce the private environment inherited from a frozen parent.
+        # The former source-only test missed the restart failure in this case.
+        frozen_env=dict(env,_PYI_PARENT_PROCESS_LEVEL='1',_PYI_ARCHIVE_FILE=str(exe),
+            _PYI_APPLICATION_HOME_DIR=str(target/'removed-previous-runtime'))
+        helper=subprocess.Popen(['powershell','-NoProfile','-NonInteractive','-WindowStyle','Hidden','-EncodedCommand',encoded],env=frozen_env)
         old.wait(timeout=10);helper.wait(timeout=240);assert helper.returncode==0
         assert checksum(connection)==settings_hash
         assert checksum(data/'templates'/template.name)==template_hash

@@ -163,6 +163,7 @@ async function api(path, body, timeoutMs=0) {
   const options = body === undefined
     ? {}
     : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  if(S.workspace==='draft' && !path.startsWith('/annual/') && !path.startsWith('/updates'))options.headers={...options.headers,'X-Schedule-Workspace':'draft'};
   let response;
   const controller=timeoutMs?new AbortController():null;
   const timeout=controller?setTimeout(()=>controller.abort(),timeoutMs):null;
@@ -220,13 +221,18 @@ const subjectName = (id) => id==='school-class-hour'?'Классный час':b
 function lessonsFor(date) {
   const weekday = dayIndex(date);
   if (S.data.days[date]) return S.data.days[date];
-  return S.data.baseLessons.filter((lesson) => Number(lesson.day) === weekday);
+  return datedBaseWeek(date).filter((lesson) => Number(lesson.day) === weekday);
 }
 
 function baseFor(date) {
   if (S.data.dayBases[date]) return S.data.dayBases[date];
   const weekday = dayIndex(date);
-  return S.data.baseLessons.filter((lesson) => Number(lesson.day) === weekday);
+  return datedBaseWeek(date).filter((lesson) => Number(lesson.day) === weekday);
+}
+
+function datedBaseWeek(date) {
+  const versions=[...(S.data.baseVersions||[])].sort((a,b)=>a.start.localeCompare(b.start));
+  return [...versions].reverse().find(v=>v.start<=date)?.lessons || versions[0]?.lessons || S.data.baseLessons;
 }
 
 function cellAt(lessons, field, id, period) {
@@ -314,13 +320,14 @@ function plural(number, one, few, many) {
 
 const NAV = [
   { title: 'День', items: [['day', 'Расписание на день', 'calendar'], ['assistant', 'AI-помощник', 'spark'], ['week', 'Неделя', 'grid']] },
-  { title: 'Работа', items: [['plan', 'Учебный план', 'plan'], ['rules', 'Ограничения', 'settings'], ['absences', 'Отсутствия', 'absent'], ['journal', 'Журнал изменений', 'book']] },
+  { title: 'Работа', items: [['annual', 'Базовое расписание', 'grid'], ['plan', 'Учебный план', 'plan'], ['rules', 'Ограничения', 'settings'], ['absences', 'Отсутствия', 'absent'], ['journal', 'Журнал изменений', 'book']] },
   { title: 'Школа', items: [['directory', 'Справочники', 'users'], ['extras', 'Дополнительные занятия', 'calendar'], ['reports', 'Нагрузка', 'chart'], ['settings', 'Настройки', 'settings']] },
   { title: '', items: [['history', 'История и копии', 'history'], ['help', 'Как пользоваться', 'help']] },
 ];
 
 const PAGE_TITLES = {
   assistant: 'AI-помощник',
+  annual: 'Базовое расписание',
   rules: 'Ограничения',
   day: 'Расписание на день', week: 'Неделя', plan: 'Учебный план', absences: 'Отсутствия',
   journal: 'Журнал изменений', directory: 'Справочники', reports: 'Нагрузка',
@@ -414,6 +421,8 @@ function notice(text, kind = '', iconName = 'info') {
 function rowList() {
   const kind = S.view;
   let rows = [...(S.data[kind] || [])];
+  const fieldForKind={teachers:'teacherIds',classes:'classIds',rooms:'roomIds'}[kind];
+  if(fieldForKind)rows=rows.filter(r=>!r.archived || lessonsFor(S.date).some(l=>l[fieldForKind].includes(r.id)));
   const query = S.query.trim().toLowerCase();
   if (query) rows = rows.filter((row) => row.name.toLowerCase().includes(query));
   if (S.changesOnly) {
@@ -1118,7 +1127,7 @@ function openLessonSheet(dataset) {
     <span class="left"></span>${button('Отмена', 'close-sheet', 'ghost')}<button type="submit" class="btn primary">${icon('check')}Сохранить</button>`;
   openSheet({
     title: existing ? 'Изменить занятие' : 'Добавить занятие',
-    sub: `${fmtLongCap(date)} · ${scope === 'base' ? 'постоянное расписание' : 'только этот день'}`,
+    sub: scope==='base'?`${DAYS[dayIndex(date)]} · черновик базовой недели`:`${fmtLongCap(date)} · только этот день`,
     body,
     foot,
     submit: async (form) => { await submitLesson(form, { existing, date, scope }); },
@@ -1493,7 +1502,7 @@ function renderWeek() {
   const days = [0, 1, 2, 3, 4].map((offset) => addDays(monday, offset));
   const source = S.weekActual
     ? Object.fromEntries(days.map((date) => [date, lessonsFor(date)]))
-    : Object.fromEntries(days.map((date) => [date, S.data.baseLessons.filter(l => Number(l.day) === dayIndex(date))]));
+    : Object.fromEntries(days.map((date) => [date, datedBaseWeek(date).filter(l => Number(l.day) === dayIndex(date))]));
   const gaps = [];
   const rows = S.data.school.bells.map((bell, index) => {
     const period = index + 1;
@@ -1503,13 +1512,13 @@ function renderWeek() {
       const first = Math.min(...allPeriods);
       const last = Math.max(...allPeriods);
       const gap = !lessons.length && allPeriods.length && period > first && period < last;
-      return `<td class="${gap ? 'week-gap' : ''}"><button type="button" class="week-edit" draggable="${lessons.length ? 'true' : 'false'}" data-week-edit="1" data-lesson="${lessons[0]?.id || ''}" data-date="${date}" data-scope="${S.weekActual ? 'day' : 'base'}" data-row-kind="${kind}" data-row="${id}" data-period="${period}" aria-label="${esc(DAYS[dayIndex(date)] + ', урок ' + period + ': ' + (lessons[0] ? describe(lessons[0]) : 'добавить занятие'))}">${lessons.map(weekCell).join('') || '<span class="week-empty">—</span>'}</button></td>`;
+      return `<td class="${gap ? 'week-gap' : ''}"><button type="button" class="week-edit" draggable="${lessons.length && (S.workspace==='draft'||S.weekActual)?'true':'false'}" ${(S.workspace==='draft'||S.weekActual)?'data-week-edit="1"':''} data-lesson="${lessons[0]?.id || ''}" data-date="${date}" data-scope="${S.weekActual ? 'day' : 'base'}" data-row-kind="${kind}" data-row="${id}" data-period="${period}" aria-label="${esc(DAYS[dayIndex(date)] + ', урок ' + period + ': ' + (lessons[0] ? describe(lessons[0]) : 'добавить занятие'))}">${lessons.map(weekCell).join('') || '<span class="week-empty">—</span>'}</button></td>`;
     }).join('');
     return `<tr><th><span class="pnum">${period}</span><small>${esc(bell)}</small></th>${cells}</tr>`;
   }).join('');
   const total = days.reduce((sum, date) => sum + (source[date] || []).filter((lesson) => (lesson[field] || []).includes(id)).length, 0);
   const actions = `
-    <label class="check"><input type="checkbox" id="week-actual" ${S.weekActual ? 'checked' : ''}>С учётом изменений</label>
+    ${S.workspace==='draft'?'':`<label class="check"><input type="checkbox" id="week-actual" ${S.weekActual ? 'checked' : ''}>С учётом изменений</label>${button('Изменить базовое расписание','annual-open','primary')}`}
     <button type="button" class="btn ghost" data-action="show-load">Распределение часов</button>
     <button type="button" class="btn ghost" data-action="plan-check">${icon('alert')}Проверить план</button>`;
   return `
@@ -1522,12 +1531,12 @@ function renderWeek() {
           <button type="button" data-action="week-kind" data-value="teachers" class="${kind === 'teachers' ? 'active' : ''}">Учителя</button>
         </div>
         <select class="input" id="week-entity" style="max-width:320px">${S.data[kind].map((item) => `<option value="${item.id}" ${item.id === id ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select>
-        <span class="muted">Двойной щелчок по клетке — изменить или добавить урок</span>
+        <span class="muted">${S.workspace==='draft'||S.weekActual?'Двойной щелчок по клетке: изменить или добавить урок':'Изменения базовой недели готовятся отдельным черновиком.'}</span>
       </div>
       <div class="table-card">
         <div class="table-scroll">
           <table class="week-table">
-            <thead><tr><th>Урок</th>${days.map((date) => `<th>${DAYS[dayIndex(date)]}<small>${fmtShort(date)}</small></th>`).join('')}</tr></thead>
+            <thead><tr><th>Урок</th>${days.map((date) => `<th>${DAYS[dayIndex(date)]}${S.workspace==='draft'?'':`<small>${fmtShort(date)}</small>`}</th>`).join('')}</tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
@@ -1856,7 +1865,7 @@ function renderSettings() {
         <div><h2>Расписание</h2><p>Версия <span id="app-version">${esc(S.appVersion || '')}</span></p></div>
         <button type="button" class="btn" data-action="show-releases">${icon('history')}Что нового</button>
       </section>
-      ${S.updateSettings?.configured?`<section class="table-card" style="padding:18px 22px;max-width:900px;margin-bottom:20px"><label class="check-row"><input type="checkbox" data-update-setting ${S.updateSettings.enabled?'checked':''}> Обновлять приложение при запуске</label></section>`:''}
+      ${S.updateSettings?.configured?`<section class="table-card" style="padding:18px 22px;max-width:900px;margin-bottom:20px"><div class="assistant-actions"><label class="check-row"><input type="checkbox" data-update-setting ${S.updateSettings.enabled?'checked':''}> Проверять обновления после открытия</label>${button('Проверить обновления','update-check','ghost')}</div><p class="muted" style="margin-top:12px">Загрузка и установка требуют вашего подтверждения.</p></section>`:''}
       <form id="settings-form" class="table-card" style="padding:20px 22px;max-width:900px">
         <div class="form-grid two">
           <label class="field"><span>Название школы</span><input class="input" name="name" value="${esc(school.name)}"></label>
@@ -2052,19 +2061,20 @@ function render() {
   renderNav();
   renderCrumb();
   const pages = {
-    assistant: renderAssistant, extras: renderExtras, rules: renderConstraints,
+    assistant: renderAssistant, extras: renderExtras, rules: renderConstraints, annual: renderAnnual,
     day: renderDay, week: renderWeek, plan: renderPlan, directory: renderDirectory,
     absences: renderAbsences, journal: renderJournal, reports: renderReports,
     settings: renderSettings, history: renderHistory, help: renderHelp,
   };
   const scroll = $('#main').scrollTop;
-  $('#main').innerHTML = (pages[S.page] || renderDay)();
+  $('#main').innerHTML = (S.workspace==='draft'?annualDraftBanner():'')+(pages[S.page] || renderDay)();
   $('#main').scrollTop = scroll;
   if (S.page === 'reports' && !S.report) ensureReport();
   if (S.page === 'history' && !S.history) ensureHistory();
 }
 
 async function setPage(page) {
+  if(S.workspace==='draft' && !['week','plan','directory','rules','annual'].includes(page)) {S.workspace='live';await loadState();S.annual=null;}
   closeModal();
   closeSheet();
   if(typeof stopVoiceCapture==='function' && isVoiceBusy())stopVoiceCapture(false);
@@ -2157,15 +2167,15 @@ document.addEventListener('click', async (event) => {
     if (action === 'changes') { openChanges(); return; }
     if (action === 'issues') { openIssues(); return; }
     if (action === 'reset-day') { await resetDay(); return; }
-    if (action === 'new-entity') { openEntitySheet(target.dataset.kind || S.dirKind); return; }
-    if (action === 'edit-entity') { openEntitySheet(target.dataset.kind, target.dataset.id); return; }
-    if (action === 'delete-entity') { await deleteEntity(target.dataset.kind, target.dataset.id); return; }
+    if (action === 'new-entity') { const kind=target.dataset.kind||S.dirKind;if(kind==='plan'&&S.workspace!=='draft'){await openAnnualDraft();S.page='plan';render();}openEntitySheet(kind); return; }
+    if (action === 'edit-entity') { if(target.dataset.kind==='plan'&&S.workspace!=='draft'){await openAnnualDraft();S.page='plan';render();}openEntitySheet(target.dataset.kind, target.dataset.id); return; }
+    if (action === 'delete-entity') { if(target.dataset.kind==='plan'&&S.workspace!=='draft'){await openAnnualDraft();S.page='plan';render();}await deleteEntity(target.dataset.kind, target.dataset.id); return; }
     if (action === 'remove-lesson') { await removeLesson(); return; }
     if (action === 'plan-check') { await checkPlan(); return; }
     if (action === 'build-week') { await buildAnnualWeek(); return; }
     if (action === 'run-build-week') { await runAnnualWeek(); return; }
     if (action === 'apply-build-week') { await applyAnnualWeek(); return; }
-    if (action === 'fill-missing') { await previewFillMissing(); return; }
+    if (action === 'fill-missing') { if(S.workspace!=='draft')await openAnnualDraft();await previewFillMissing(); return; }
     if (action === 'apply-fill') { await applyFillMissing(target); return; }
     if (action === 'journal-confirm') { await confirmJournal(target.dataset.id); return; }
     if (action === 'restore-history') { await restoreHistory(target.dataset.id); return; }
@@ -2256,6 +2266,7 @@ document.addEventListener('submit', async (event) => {
 });
 
 async function buildAnnualWeek() {
+  if(S.workspace!=='draft') {await openAnnualDraft();return buildAnnualWeek();}
   openModal({title: 'Составить базовую неделю', sub: 'Подготовка расписания на учебный год',
     body: notice('Будут расставлены все часы учебного плана с закреплёнными учителями. Закреплённые уроки сохранят время. Расчёт может занять несколько секунд; сначала вы увидите результат для проверки.'),
     foot: button('Отмена','close-modal','ghost') + button('Рассчитать неделю','run-build-week','primary','spark')});
@@ -2280,7 +2291,8 @@ async function applyAnnualWeek() {
   try {
     const result=await api('/week/apply',{revision:S.weekPreview.revision,previewId:S.weekPreview.previewId});
     S.data=result.state;S.revision=result.revision;S.weekPreview=null;
-    closeModal();await refreshAll('Базовая неделя сохранена. Предыдущая версия доступна в истории.');
+    S.page='week';S.weekActual=false;
+    closeModal();await refreshAll('Неделя сохранена в черновике. Проверьте её и выберите дату ввода.');
   } catch(error) { modalError(error.message); }
 }
 
@@ -2441,7 +2453,18 @@ document.addEventListener('drop', async (event) => {
   if (!cell || !S.dragLesson) return;
   event.preventDefault();
   const sourceId = S.dragLesson.id;
-  if(cell.dataset.date && cell.dataset.date!==S.dragLesson.date) {clearDropTargets();S.dragLesson=null;await askConfirm({title:'Выберите место в этом же дне',text:'Уроки не переносятся на другие дни недели.',yes:'Понятно'});return;}
+  if(cell.dataset.date && cell.dataset.date!==S.dragLesson.date) {
+    if(S.workspace==='draft' && S.dragLesson.scope==='base') {
+      const field={teachers:'teacherIds',classes:'classIds',rooms:'roomIds'}[cell.dataset.rowKind];
+      const source=S.data.baseLessons.find(l=>l.id===sourceId);
+      if(!source || !field || !source[field].includes(cell.dataset.row)){clearDropTargets();S.dragLesson=null;toast('Выберите клетку этого класса, учителя или кабинета.','error');return;}
+      try {const r=await api('/annual/move',{revision:S.revision,lessonId:sourceId,targetId:cell.dataset.lesson||null,targetDate:cell.dataset.date,period:Number(cell.dataset.period)});S.data=r.state;S.revision=r.revision;await loadDay();render();toast('Урок перенесён в черновике.');}
+      catch(error){toast(error.message,'error');}
+      finally {clearDropTargets();S.dragLesson=null;S.suppressClickUntil=Date.now()+900;}
+      return;
+    }
+    clearDropTargets();S.dragLesson=null;await askConfirm({title:'Выберите место в этом же дне',text:'Ежедневные изменения не переносят уроки на другие дни. Базовую неделю можно перестраивать в отдельном черновике.',yes:'Понятно'});return;
+  }
   const targetId = cell.dataset.lesson || '';
   const permission = dropPermission(cell);
   const source = dragRows().find(lesson=>lesson.id===sourceId);
@@ -2509,6 +2532,7 @@ async function boot() {
     window.ScheduleStartup?.stage('rendering-timetable');
     render();
     window.ScheduleStartup?.ready();
+    if(typeof checkAppUpdates==='function')checkAppUpdates(true);
     if (S.page === 'reports') ensureReport();
     if (S.page === 'history') ensureHistory();
   } catch (error) {

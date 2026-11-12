@@ -132,7 +132,7 @@ def download(client, payload, cache, progress=None):
         digest = hashlib.sha256()
         size = 0
         with temporary.open('wb') as stream:
-            for block in response.iter_bytes(1024 * 1024):
+            for block in response.iter_bytes(64 * 1024):
                 size += len(block)
                 if size > asset['size']:
                     raise ValueError('Размер обновления не совпадает.')
@@ -198,6 +198,10 @@ $start.Arguments = $arguments -join ' '
 $start.WorkingDirectory = $folder
 $start.UseShellExecute = $false
 $start.CreateNoWindow = $true
+# The helper can originate inside a frozen PyInstaller application. Its child
+# must be a fresh application, not a worker reusing the old bootloader state.
+foreach ($name in @('_PYI_APPLICATION_HOME_DIR','_PYI_PARENT_PROCESS_LEVEL','_PYI_ARCHIVE_FILE','_MEIPASS2')) {{ $start.EnvironmentVariables.Remove($name) }}
+$start.EnvironmentVariables['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
 $process = [System.Diagnostics.Process]::Start($start)
 $process.WaitForExit()
 if ($process.ExitCode -eq 0) {{
@@ -205,7 +209,11 @@ if ($process.ExitCode -eq 0) {{
   $start.Arguments = ''
   [System.Diagnostics.Process]::Start($start) | Out-Null
 }}
-else {{ Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('Не удалось установить обновление. Откройте приложение обычным ярлыком. Расписание сохранено.', 'Расписание') | Out-Null }}
+else {{
+  $start.FileName = Join-Path $folder 'Расписание.exe'
+  $start.Arguments = ''
+  if ([System.IO.File]::Exists($start.FileName)) {{ [System.Diagnostics.Process]::Start($start) | Out-Null }}
+}}
 """
 
 
@@ -220,7 +228,13 @@ def launch_installer(installer, folder, payload):
     subprocess.Popen([str(system), '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
                       '-EncodedCommand', command], cwd=str(folder),
                      creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-                     close_fds=True)
+                     close_fds=True,env=clean_environment())
+
+
+def clean_environment():
+    env={k:v for k,v in os.environ.items() if not k.startswith('_PYI_') and k!='_MEIPASS2'}
+    env['PYINSTALLER_RESET_ENVIRONMENT']='1'
+    return env
 
 
 def status(data):
@@ -233,33 +247,6 @@ def status(data):
 
 
 def startup_update(data, resources, folder):
-    """Check before opening; offline startup has a fixed short deadline."""
+    """Compatibility entry point. Never download or install during startup."""
     preserve_templates(data, resources)
-    if (Path(data) / 'updates-disabled').exists():
-        return False
-    config = channel()
-    if not config:
-        return False
-    found = []
-
-    def check():
-        try:
-            with httpx.Client(timeout=2, follow_redirects=False, headers={'User-Agent': 'SchoolSchedule-Updates'}) as client:
-                found.append(fetch_manifest(client, config))
-        except Exception:
-            logging.info('Update check unavailable; opening installed version')
-
-    worker = threading.Thread(target=check, daemon=True)
-    worker.start()
-    worker.join(CHECK_SECONDS)
-    if not found or not found[0]:
-        return False
-    payload = found[0]
-    # A small native window; no WebView or recognition model needs loading yet.
-    from .update_window import obtain_update
-    installer = obtain_update(data, payload)
-    if installer is None:
-        return False
-    backup_before_update(data)
-    launch_installer(installer, folder, payload)
-    return True
+    return False

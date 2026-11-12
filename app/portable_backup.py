@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import tempfile
 import zipfile
+import zlib
 
 from .assistant_history import AssistantHistory
 from .class_hours import fill_leaders,sync_labels
@@ -79,6 +80,7 @@ def export(store,data,connection,*,password=None):
     fill_leaders(state);sync_labels(state)
     for item in snapshots:
         fill_leaders(item['state']);sync_labels(item['state'])
+        item['packedState']=_b64(zlib.compress(json.dumps(item.pop('state'),ensure_ascii=False).encode('utf-8')))
     state['_assistantConversations']=conversations
     with connection.lock:config=deepcopy(connection._read())
     settings={k:config[k] for k in CONFIG_FIELDS if k in config}
@@ -89,7 +91,7 @@ def export(store,data,connection,*,password=None):
         for audience in ('teachers','students'):
             path=template_path(d,audience)
             if path.is_file():templates[path.name]=_b64(path.read_bytes())
-    state['_portableBackup']={'version':1,'templates':templates,'snapshots':snapshots,
+    state['_portableBackup']={'version':2,'templates':templates,'snapshots':snapshots,
         'assistantSettings':settings,'updatesEnabled':not (Path(data)/'updates-disabled').exists(),
         'encryptedKeys':seal(secrets,password) if secrets else None,
         'keyEntryRequired':bool(any(config.get(k) for k in ('key','deepseekKey')) and not secrets)}
@@ -106,7 +108,7 @@ def prepare(raw,password,connection):
     conversations=AssistantHistory.validate_import(raw.pop('_assistantConversations',[]))
     state=validate_state(normalize_state(raw));fill_leaders(state);sync_labels(state)
     if extra is None:return state,conversations,None,{}
-    if not isinstance(extra,dict) or extra.get('version')!=1:raise ValueError('Эта версия резервной копии пока не поддерживается.')
+    if not isinstance(extra,dict) or extra.get('version') not in (1,2):raise ValueError('Эта версия резервной копии пока не поддерживается.')
     templates=extra.get('templates',{});snapshots=extra.get('snapshots',[])
     if not isinstance(templates,dict) or len(templates)>16 or not isinstance(snapshots,list) or len(snapshots)>16:
         raise ValueError('В резервной копии повреждены шаблоны или история версий.')
@@ -127,6 +129,11 @@ def prepare(raw,password,connection):
         files['templates/'+name]=content
     for snapshot in snapshots:
         try:
+            if 'packedState' in snapshot:
+                decoder=zlib.decompressobj()
+                content=decoder.decompress(_unb64(snapshot.pop('packedState'),8_000_000),8_000_001)
+                if len(content)>8_000_000 or not decoder.eof or decoder.unused_data:raise ValueError()
+                snapshot['state']=json.loads(content)
             datetime.fromisoformat(snapshot['created'])
             if not isinstance(snapshot['label'],str) or len(snapshot['label'])>1000:raise ValueError()
             validate_state(normalize_state(snapshot['state']))

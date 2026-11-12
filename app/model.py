@@ -447,6 +447,9 @@ def _require_refs(state: dict, kind: str, ids, idset: set, where: str):
 def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
     """Validate structure and references.  Returns the same object."""
     state = raw
+    if 'annualDraft' in state or 'baseVersions' in state:
+        from .annual_workspace import validate as validate_annual
+        validate_annual(state)
     from .commitments import validate as validate_commitments
     validate_commitments(state)
     notices=state.get('dayNotices',{})
@@ -680,14 +683,16 @@ def base_for_day(state: dict, day) -> list[dict]:
     key = iso(day)
     if key in state["dayBases"]:
         return [deepcopy(l) for l in state["dayBases"][key]]
-    return base_for_weekday(state, parse_date(key).weekday())
+    from .annual_workspace import effective_week
+    return [deepcopy(l) for l in effective_week(state,key) if int(l['day'])==parse_date(key).weekday()]
 
 
 def lessons_for_day(state: dict, day) -> list[dict]:
     key = iso(day)
     if key in state["days"]:
         return [deepcopy(l) for l in state["days"][key]]
-    return base_for_weekday(state, parse_date(key).weekday())
+    from .annual_workspace import effective_week
+    return [deepcopy(l) for l in effective_week(state,key) if int(l['day'])==parse_date(key).weekday()]
 
 
 def has_override(state: dict, day) -> bool:

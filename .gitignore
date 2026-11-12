@@ -32,6 +32,7 @@
 !/tests/test_updates.py
 !/tests/test_composite_requests.py
 !/tests/test_constraints_and_transfer.py
+!/tests/test_annual_and_update_flow.py
 /tools/*
 !/tools/check_repository.py
 !/tools/lock_requirements.py
