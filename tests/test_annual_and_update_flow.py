@@ -211,3 +211,20 @@ def test_successful_target_version_clears_failed_attempt_marker(tmp_path):
     (tmp_path/'update-attempt.json').write_text('{"version":"0.0.1"}')
     manager=UpdateManager(tmp_path,tmp_path,tmp_path,lambda:None)
     assert not manager.attempt.exists()
+
+
+@pytest.mark.parametrize('problem',['gap','pair_incomplete'])
+def test_publication_blocks_student_gaps_and_incomplete_pairs(client,problem):
+    client.post('/api/annual/start',json={'revision':1})
+    def break_week(state):
+        lesson=next(l for l in state['baseLessons'] if l['id']=='a3')
+        if problem=='gap':lesson['period']=4
+        else:
+            lesson.update(day=3,period=1,subjectId='tech',roomIds=[])
+            state['plan'].append({'id':'paired-plan','classIds':['one'],'teacherIds':['b'],'subjectId':'tech','roomIds':[],'hours':2,'doubleLessons':True,'maxPerDay':2})
+    draft=DraftStore(server.store).mutate(2,'Незавершённая сетка',break_week)
+    review=client.get('/api/annual/review').json()
+    assert any(i['code']==problem and i['level']=='error' for i in review['issues'])
+    response=client.post('/api/annual/publish',json={'revision':draft['revision'],'start':'2026-11-16','keepDays':True,'acceptIncomplete':True})
+    assert response.status_code==422
+    assert not server.store.read()['state'].get('baseVersions')

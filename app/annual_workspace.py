@@ -4,7 +4,7 @@ from copy import deepcopy
 from datetime import date
 from uuid import uuid4
 from fastapi import APIRouter
-from .store import Conflict,Store
+from .store import Store
 
 workspace=ContextVar('schedule_workspace',default='live')
 router=APIRouter(prefix='/api/annual')
@@ -29,7 +29,7 @@ def effective_week(state,day):
 
 
 def validate(state):
-    from .model import validate_state,check_slots
+    from .model import validate_state
     draft=state.get('annualDraft')
     if draft is not None:
         if (not isinstance(draft,dict) or not isinstance(draft.get('state'),dict)
@@ -40,7 +40,6 @@ def validate(state):
     versions=state.get('baseVersions',[])
     if not isinstance(versions,list) or len(versions)>40:raise ValueError('Слишком много редакций базового расписания.')
     seen=set()
-    ids={kind:{r['id'] for r in state[kind]} for kind in CATALOGS}
     for row in versions:
         try:
             date.fromisoformat(row['start'])
@@ -51,6 +50,16 @@ def validate(state):
             old['plan']=deepcopy(row.get('plan',state['plan']))
             validate_state(old)
         except (KeyError,TypeError,ValueError):raise ValueError('Повреждена редакция базового расписания.') from None
+
+
+def publication_issues(state):
+    from .model import issues
+    checks=issues(state,state['baseLessons'],gaps=True)
+    # Incomplete pairs are useful while editing a draft, but may not become
+    # a permanent week. Teacher gaps deliberately remain unrestricted.
+    for row in checks:
+        if row['code'] in ('pair_incomplete','gap'):row['level']='error'
+    return checks
 
 
 class DraftStore:
@@ -155,7 +164,7 @@ def publish(body:dict):
         planned={lesson_key(p) for p in work['plan']}
         if any(lesson_key(l) not in planned for l in work['baseLessons']):
             raise ValueError('В сетке есть уроки вне учебного плана. Добавьте их в план или уберите из черновика.')
-        errors=[r for r in issues(work,work['baseLessons']) if r['level']=='error']
+        errors=[r for r in publication_issues(work) if r['level']=='error']
         if errors:raise ValueError('Сначала исправьте ошибки черновика: '+errors[0]['message'])
         if (report['missing'] or report['extra']) and body.get('acceptIncomplete') is not True:
             raise ValueError('Распределите часы учебного плана перед вводом расписания.')
@@ -198,7 +207,7 @@ def publish(body:dict):
 def review():
     from .model import issues,plan_report,lesson_key
     work=DraftStore(context().store).read()['state']
-    checks=issues(work,work['baseLessons'])
+    checks=publication_issues(work)
     planned={lesson_key(p) for p in work['plan']}
     unplanned=[l['id'] for l in work['baseLessons'] if lesson_key(l) not in planned]
     if unplanned:checks.append({'level':'error','code':'unplanned','message':'В сетке есть уроки вне учебного плана.','lessonIds':unplanned})
