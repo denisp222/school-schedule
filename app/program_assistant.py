@@ -34,6 +34,8 @@ def handle(body,snapshot):
     if not help_request and not query:return None
     # Explicit daily commands stay with the existing, validated day planner.
     if not help_request and not re.search(r'покажи|найди|открой',lower) and re.search(r'не будет|отсутств|забол|перестав|сдвин|отмени.{0,15}урок|первым уроком',lower):return None
+    permanent=bool(re.search(r'постоян|кажд|график|по (?:понедельник|вторник|сред|четверг|пятниц)|в неделю|разреш[её]нн',lower))
+    if not help_request and not permanent and re.search(r'кабинет',lower) and re.search(r'недоступ|закрыт|закрой',lower):return None
     history=body.get('history',[])
     if not isinstance(history,list) or len(history)>20 or any(not isinstance(r,dict) or r.get('role') not in ('user','assistant') or not isinstance(r.get('content'),str) or len(r['content'])>6000 for r in history):raise ValueError('Начните новый диалог.')
     state=snapshot['state'];day=body['date'];reply=None;links=[];changes=[]
@@ -72,9 +74,11 @@ def handle(body,snapshot):
         catalogs={k:[{f:r[f] for f in ('id','name','maxDays','maxDaily','weeklyTarget','homeroomRoomId','homeroomTeacherId','unavailable','subjectIds') if f in r} for r in state[k] if not r.get('archived')] for k in FIELDS}
         summary={'school':{k:state['school'].get(k) for k in ('name','year','bells')},'catalogs':catalogs,
                  'load':[{k:r[k] for k in ('id','plan','base','target')} for r in plan_report(state)['teachers']]}
-        schema={'type':'object','properties':{'reply':{'type':'string'},'page':{'type':'string','enum':['',*sorted(PAGES)]},'changes':{'type':'array','maxItems':8,'items':{'type':'object','properties':{'kind':{'type':'string','enum':list(FIELDS)},'id':{'type':'string'},'field':{'type':'string'},'valueJSON':{'type':'string'}},'required':['kind','id','field','valueJSON'],'additionalProperties':False}}},'required':['reply','page','changes'],'additionalProperties':False}
+        schema={'type':'object','properties':{'scope':{'type':'string','enum':['app','day']},'reply':{'type':'string'},'page':{'type':'string','enum':['',*sorted(PAGES)]},'changes':{'type':'array','maxItems':8,'items':{'type':'object','properties':{'kind':{'type':'string','enum':list(FIELDS)},'id':{'type':'string'},'field':{'type':'string'},'valueJSON':{'type':'string'}},'required':['kind','id','field','valueJSON'],'additionalProperties':False}}},'required':['scope','reply','page','changes'],'additionalProperties':False}
         guide='Ты помощник завуча ПО ПРИЛОЖЕНИЮ, отвечаешь по-русски. Помогаешь пользоваться программой, искать записи, понимать данные и менять настройки справочников. Не меняй данные без явной просьбы. Изменения только предлагаются с подтверждением. Используй только существующие ID. Поля: '+json.dumps({k:sorted(v) for k,v in FIELDS.items()})+'. allowed это ПОЛНЫЙ список разрешённых слотов [[день0..4,урок1..8]], не добавочные слоты. valueJSON содержит JSON значения. homeroomRoomId кабинет руководителя, homeroomTeacherId руководитель класса. Пустые changes для вопросов или уточнения. Не придумывай факты. Не отправляй пользователя в учебный план при вопросе про управление программой. Страницы: '+', '.join(sorted(PAGES))+'. JSON reply,page,changes. Данные: '+json.dumps(summary,ensure_ascii=False,separators=(',',':'))
+        guide+=' Если просьба про конкретный день, перенос/отмену/объединение уроков, классный час или разовое закрытие кабинета, верни scope="day", пустые changes и page. Эти просьбы обрабатывает планировщик дня. scope="app" только для помощи по программе и постоянных справочников. Не превращай разовое ограничение в постоянный недельный график.'
         raw,model=api.connection().interpret([{'role':'system','content':guide},*history[-4:],{'role':'user','content':text}],response_schema=schema,max_output_tokens=1800)
+        if raw.get('scope')=='day':return None
         reply=raw.get('reply');changes=raw.get('changes');page=raw.get('page')
         if not isinstance(reply,str) or not isinstance(changes,list) or len(changes)>8 or not isinstance(page,str) or page not in PAGES|{''}:raise ValueError('Ответ помощника не прошёл проверку.')
         if page:links=[link(page,'Открыть раздел')]

@@ -120,3 +120,19 @@ def test_group_plan_rows_do_not_merge_and_old_dates_keep_old_links():
         if p['subjectId']=='math':p['syncGroup']='Future link'
     original['baseVersions']=[{'start':'2026-09-01','lessons':deepcopy(original['baseLessons']),'plan':old_plan}]
     assert not academic.sync_issues(original,original['baseLessons'],'2026-11-11')
+
+
+def test_daily_room_closure_never_becomes_permanent_setting(client,monkeypatch):
+    from app.program_assistant import handle
+    monkeypatch.setattr(assistant_api,'connection',lambda:None)
+    body={'date':'2026-11-16','message':'Кабинет 101 недоступен вторым уроком','programContext':True}
+    assert handle(body,server.store.read()) is None
+    assert server.store.read()['revision']==1
+
+
+def test_app_chat_can_return_to_day_planner(client,monkeypatch):
+    from app.program_assistant import handle
+    class Fake:
+        def interpret(self,*a,**k):return {'scope':'day','reply':'','page':'','changes':[]},'fake'
+    monkeypatch.setattr(assistant_api,'connection',lambda:Fake())
+    assert handle({'date':'2026-11-16','message':'Математику к третьему','programContext':True},server.store.read()) is None
