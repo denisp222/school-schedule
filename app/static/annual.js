@@ -1,7 +1,7 @@
 'use strict';
 
 function annualDraftBanner() {
-  return `<div class="annual-draft-bar"><div><strong>Черновик базового расписания</strong><small>Рабочее расписание не меняется. Черновик сохраняется автоматически.</small></div><div class="assistant-actions">${button('Проверить и ввести с даты','annual-review','primary')}${button('Закрыть черновик','annual-close','ghost')}</div></div>`;
+  return `<div class="annual-draft-bar"><div><strong>Черновик базового расписания</strong><small>Рабочее расписание не меняется. Черновик сохраняется автоматически.</small></div><div class="assistant-actions">${button('Отменить правку','draft-undo','ghost')}${button('Повторить','draft-redo','ghost')}${button('Проверить и ввести с даты','annual-review','primary')}${button('Закрыть черновик','annual-close','ghost')}</div></div>`;
 }
 
 async function ensureAnnualStatus() {
@@ -13,16 +13,16 @@ async function ensureAnnualStatus() {
 function renderAnnual() {
   if(!S.annual)ensureAnnualStatus();
   const status=S.annual;
-  return `<div class="page narrow">${pageHead('Подготовка','Базовое расписание','Учебный план и постоянная неделя. Изменения вводятся с выбранной даты.')}
-    <section class="annual-start"><h2>${status?.hasDraft?'Подготовка уже начата':'Подготовить новое расписание'}</h2><p>Измените часы, классы, преподавателей и уроки в отдельном черновике. Затем составьте неделю автоматически или расставьте её вручную.</p><div class="assistant-actions">${button(status?.hasDraft?'Продолжить черновик':'Создать черновик','annual-open','primary','grid')}${status?.hasDraft?button('Удалить черновик','annual-discard','ghost'):''}</div></section>
-    ${S.workspace==='draft'?`<section class="annual-start"><h2>Редактор</h2><div class="assistant-actions"><button class="btn" data-action="nav" data-page="plan">Учебный план</button><button class="btn" data-action="nav" data-page="week">Расставить уроки вручную</button>${button('Составить неделю автоматически','build-week','ghost','spark')}${button('Очистить сетку','annual-clear','ghost')}</div></section>`:''}
+  return `<div class="page narrow">${pageHead('','Базовое расписание','Учебный план и постоянная неделя. Изменения вводятся с выбранной даты.')}
+    <section class="annual-start"><h2>${S.workspace==='draft'?'Редактируйте постоянную неделю':status?.hasDraft?'Есть сохранённые изменения':'Подготовить новое расписание'}</h2><p>Измените часы, классы, преподавателей и уроки в отдельном черновике. Затем составьте неделю автоматически или расставьте её вручную.</p><div class="assistant-actions">${S.workspace==='draft'?button('Открыть общую таблицу','base-edit','primary','grid'):button(status?.hasDraft?'Продолжить редактирование':'Изменить базовое расписание','annual-open','primary','grid')}${status?.hasDraft?button('Удалить черновик','annual-discard','ghost'):''}</div></section>
+    ${S.workspace==='draft'?`<section class="annual-start"><h2>Учебный план и расстановка</h2><p>1. Измените часы в учебном плане. 2. Откройте общую таблицу или составьте неделю автоматически. 3. Проверьте результат и выберите дату начала.</p><div class="assistant-actions"><button class="btn" data-action="nav" data-page="plan">Учебный план</button><button class="btn" data-action="nav" data-page="week">Расставить уроки вручную</button>${button('Составить неделю автоматически','build-week','ghost','spark')}${button('Очистить сетку','annual-clear','ghost')}</div></section>`:''}
     <section class="annual-start"><h2>Действующие редакции</h2>${status?.versions?.length?status.versions.map(v=>`<p>С ${fmtDate(v.start)}</p>`).join(''):'<p class="muted">Сейчас используется исходная базовая неделя.</p>'}</section></div>`;
 }
 
 async function openAnnualDraft() {
   const result=await api('/annual/start',{revision:S.revision});
   S.workspace='draft';S.weekActual=false;S.data=result.state;S.revision=result.revision;S.annual=null;S.report=null;
-  S.page='annual';history.replaceState(null,'','#annual');await loadDay();render();
+  S.weekOverview=true;S.page='week';history.replaceState(null,'','#week');await loadDay();render();
 }
 
 async function closeAnnualDraft() {

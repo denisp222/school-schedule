@@ -374,7 +374,7 @@ def messages_for(state, day, message, history, *, full_context=False):
         })
     # Some open model templates use only the last system message. Keep rules
     # and context together so a second system message cannot replace the rules.
-    messages[0]['content'] += CONTEXT_MARKER + json.dumps(context, ensure_ascii=False)
+    messages[0]['content'] += CONTEXT_MARKER + json.dumps(context, ensure_ascii=False,separators=(',',':'))
     for row in history:
         if not isinstance(row, dict) or row.get('role') not in ('user', 'assistant') or not isinstance(row.get('content'), str) or len(row['content']) > 6000:
             raise AssistantError('Не удалось прочитать диалог. Начните новую просьбу.')

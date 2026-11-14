@@ -81,7 +81,7 @@ function renderAssistant() {
   const currentConditions = S.data.assistantConditions?.[a.date] || [];
   return `<div class="page assistant-page">
     ${pageHead('', 'AI-помощник', 'Что изменить в расписании?', button('Настройки', 'assistant-settings', 'ghost', 'settings'))}
-    <div class="assistant-layout">${assistantHistoryList()}<div class="assistant-workspace">
+    <div class="assistant-tools">${button(S.chatHidden?'Показать диалоги':'Скрыть диалоги','chat-toggle','ghost')}${button('Проверить расписание','school-advisor','ghost','spark')}</div><div class="assistant-layout ${S.chatHidden?'history-hidden':''}" style="--chat-width:${Number(localStorage.getItem('chat-width')||280)}px">${assistantHistoryList()}<div class="assistant-workspace">
       <label class="field assistant-date"><span>День изменений</span><input class="input" id="assistant-date" type="date" value="${esc(a.date)}" ${a.pending ? 'disabled' : ''}></label>
       ${!ready ? notice(`Для начала добавьте ключ ${a.status.providerName || 'OpenRouter'} в настройках помощника.`) : ''}
       ${currentConditions.length ? `<div class="assistant-existing"><p>Сохранённые условия этого дня учитываются и при обычном подборе.</p><ul>${currentConditions.map(row => `<li>${esc(assistantConditionLabel(row))}</li>`).join('')}</ul>${button('Снять условия дня', 'assistant-clear-conditions', 'ghost')}</div>` : ''}
@@ -173,7 +173,7 @@ function assistantHistoryList() {
   if(!a.history)ensureAssistantHistory();
   const groups=new Map();for(const row of a.history||[]) {if(!groups.has(row.date))groups.set(row.date,[]);groups.get(row.date).push(row);}
   const rows=[...groups.entries()].sort(([a],[b])=>b.localeCompare(a)).map(([date,items])=>`<section aria-label="Диалоги на ${fmtDate(date)}"><h3 class="conversation-date">${fmtDate(date)}</h3>${items.map(row=>`<div class="conversation-entry"><button class="assistant-history-row ${row.id===a.threadId?'active':''}" data-action="assistant-open-thread" data-id="${esc(row.id)}" aria-current="${row.id===a.threadId?'true':'false'}"><span title="${esc(row.title)}">${esc(row.title)}</span></button><button class="conversation-delete" data-action="assistant-delete-thread" data-id="${esc(row.id)}" aria-label="Удалить диалог: ${esc(row.title)}" title="Удалить диалог">${icon('trash',14)}</button></div>`).join('')}</section>`).join('');
-  return `<aside class="conversation-sidebar" aria-label="Диалоги"><div class="conversation-heading"><h2>Диалоги</h2>${button('Новый диалог','assistant-new','ghost','plus')}</div><div class="conversation-list">${!a.history?'<p class="assistant-note">Загружаем диалоги…</p>':rows||'<p class="assistant-note">Здесь появятся ваши диалоги.</p>'}${a.historyMore?button('Показать ещё','assistant-more-history','ghost'):''}</div></aside>`;
+  return `<aside class="conversation-sidebar" aria-label="Диалоги"><div class="conversation-heading"><h2>Диалоги</h2><label class="chat-width">Ширина<input aria-label="Ширина списка диалогов" type="range" min="200" max="440" value="${Number(localStorage.getItem('chat-width')||280)}" id="chat-width"></label>${button('Новый диалог','assistant-new','ghost','plus')}</div><div class="conversation-list">${!a.history?'<p class="assistant-note">Загружаем диалоги…</p>':rows||'<p class="assistant-note">Здесь появятся ваши диалоги.</p>'}${a.historyMore?button('Показать ещё','assistant-more-history','ghost'):''}</div></aside>`;
 }
 
 async function openAssistantThread(id) {

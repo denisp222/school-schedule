@@ -79,6 +79,8 @@ class DraftStore:
             draft=state.get('annualDraft')
             if not draft:raise ValueError('Черновик больше не найден.')
             work=deepcopy(draft['state']);result=fn(work)
+            draft.setdefault('undo',[]).append(deepcopy(draft['state']))
+            draft['undo']=draft['undo'][-5:];draft['redo']=[]
             draft['state']=validate_state(work if result is None else result)
             draft['updated']=Store.now()
         saved=self.main.mutate(revision,'Черновик: '+label,change)
@@ -212,3 +214,17 @@ def review():
     unplanned=[l['id'] for l in work['baseLessons'] if lesson_key(l) not in planned]
     if unplanned:checks.append({'level':'error','code':'unplanned','message':'В сетке есть уроки вне учебного плана.','lessonIds':unplanned})
     return {'report':plan_report(work),'issues':checks}
+
+
+@router.post('/history')
+def draft_history(body:dict):
+    server=context();direction=body.get('direction')
+    if direction not in ('undo','redo'):raise ValueError('Неизвестное действие.')
+    def change(state):
+        draft=state.get('annualDraft')
+        if not draft or not draft.get(direction):raise ValueError('Нет правок для отмены.' if direction=='undo' else 'Нет правок для повтора.')
+        other='redo' if direction=='undo' else 'undo'
+        draft.setdefault(other,[]).append(deepcopy(draft['state']))
+        draft[other]=draft[other][-5:];draft['state']=draft[direction].pop();draft['updated']=Store.now()
+    saved=server.store.mutate(server.require_revision(body),'Отмена правки черновика' if direction=='undo' else 'Повтор правки черновика',change)
+    return {'revision':saved['revision'],'state':saved['state']['annualDraft']['state']}

@@ -346,14 +346,14 @@ function renderNav() {
         ${id === 'journal' && S.data.journal?.length ? `<span class="count">${S.data.journal.filter((r) => r.active).length}</span>` : ''}
       </button>`).join('')}
   `).join('');
-  $('#brand-sub').textContent = `${S.data.school.year} · пятидневка`;
+  $('#brand-sub').textContent = S.data.school.year;
 }
 
 function renderCrumb() {
   const school = S.data.school;
   $('#crumb').innerHTML = `
     <strong>${esc(school.year)}</strong><span class="sep">·</span>
-    <span>${esc(school.name)}</span><span class="sep">·</span>
+    <span>Расписание</span><span class="sep">·</span>
     <span>${esc(PAGE_TITLES[S.page] || '')}</span>`;
 }
 
@@ -1495,9 +1495,10 @@ function weekCell(lesson) {
 }
 
 function renderWeek() {
+  if(S.weekOverview!==false)return renderBaseOverview();
   const kind = S.weekKind;
   const id = weekEntityId();
-  const field = kind === 'classes' ? 'classIds' : 'teacherIds';
+  const field = kind === 'classes' ? 'classIds' : kind==='rooms'?'roomIds':'teacherIds';
   const monday = mondayOf(S.date);
   const days = [0, 1, 2, 3, 4].map((offset) => addDays(monday, offset));
   const source = S.weekActual
@@ -1523,7 +1524,7 @@ function renderWeek() {
     <button type="button" class="btn ghost" data-action="plan-check">${icon('alert')}Проверить план</button>`;
   return `
     <div class="page">
-      ${pageHead('Постоянное расписание', 'Неделя', `${total} ${plural(total, 'занятие', 'занятия', 'занятий')} · ${kind === 'classes' ? 'для класса' : 'для учителя'}`, actions)}
+      ${button('Общее расписание по дням','base-overview','ghost')}${pageHead('Постоянное расписание', 'Неделя', `${total} ${plural(total, 'занятие', 'занятия', 'занятий')} · ${kind === 'classes' ? 'для класса' : 'для учителя'}`, actions)}
       ${S.weekActual ? dateStrip() : ''}
       <div class="toolbar">
         <div class="segmented">
@@ -1746,7 +1747,7 @@ function renderDirectory() {
    -------------------------------------------------------------------------- */
 
 function renderAbsences() {
-  const rows = [...S.data.absences].sort((a, b) => String(b.start).localeCompare(String(a.start)) || String(a.end).localeCompare(String(b.end)) || nameOf('teachers',a.teacherId).localeCompare(nameOf('teachers',b.teacherId),'ru'));
+  const rows = [...S.data.absences].filter(r=>(!S.absenceTeacher||r.teacherId===S.absenceTeacher)&&(!S.absenceFrom||r.end>=S.absenceFrom)&&(!S.absenceTo||r.start<=S.absenceTo)).sort((a, b) => String(b.start).localeCompare(String(a.start)) || String(a.end).localeCompare(String(b.end)) || nameOf('teachers',a.teacherId).localeCompare(nameOf('teachers',b.teacherId),'ru'));
   const groups=new Map();for(const row of rows){const key=row.start+'/'+row.end;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(row);}
   const cards = [...groups.values()].map(items=>`<section class="date-section"><h2>${fmtDate(items[0].start)}${items[0].end!==items[0].start?' – '+fmtDate(items[0].end):''}</h2><div class="absence-list">${items.map((row) => `
     <div class="absence-card">
@@ -1757,7 +1758,7 @@ function renderAbsences() {
   return `
     <div class="page">
       ${pageHead('Отсутствия', 'Кто отсутствует', 'Болезнь, приём у врача, курсы. Отсутствие учитывается при подборе замен.', button('Отметить отсутствие', 'absence', 'primary', 'plus'))}
-      ${rows.length ? `<div class="absence-list">${cards}</div>` : emptyState('Отсутствий нет', 'Когда учитель заболел, отметьте его здесь — программа подберёт перестановки на нужный день.', 'absent')}
+      <div class="filter-bar"><label class="field"><span>Учитель</span><select class="input" data-absence-filter="absenceTeacher"><option value="">Все учителя</option>${S.data.teachers.map(t=>`<option value="${esc(t.id)}" ${S.absenceTeacher===t.id?'selected':''}>${esc(t.name)}</option>`).join('')}</select></label><label class="field"><span>С даты</span><input class="input" type="date" data-absence-filter="absenceFrom" value="${S.absenceFrom||''}"></label><label class="field"><span>По дату</span><input class="input" type="date" data-absence-filter="absenceTo" value="${S.absenceTo||''}"></label>${button('Сбросить фильтры','absence-reset','ghost')}</div>${rows.length ? `<div class="absence-list">${cards}</div>` : emptyState('Отсутствий нет', 'Когда учитель заболел, отметьте его здесь — программа подберёт перестановки на нужный день.', 'absent')}
       <div style="margin-top:16px">${notice('Отсутствие не меняет расписание автоматически. После отметки откройте «Расписание на день» и нажмите «Подобрать замены»: программа сохранит уроки с их учителями, переставит занятия и отменит только невозможные.', 'info')}</div>
     </div>`;
 }

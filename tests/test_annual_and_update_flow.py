@@ -213,6 +213,36 @@ def test_successful_target_version_clears_failed_attempt_marker(tmp_path):
     assert not manager.attempt.exists()
 
 
+def test_draft_undo_redo_is_durable_and_preserves_live(client):
+    before=server.store.read()['state']['baseLessons']
+    client.post('/api/annual/start',json={'revision':1})
+    changed=client.post('/api/annual/clear',json={'revision':2}).json()
+    undone=client.post('/api/annual/history',json={'revision':changed['revision'],'direction':'undo'}).json()
+    assert undone['state']['baseLessons']==before
+    redone=client.post('/api/annual/history',json={'revision':undone['revision'],'direction':'redo'}).json()
+    assert redone['state']['baseLessons']==[]
+    assert server.store.read()['state']['baseLessons']==before
+
+
+def test_advisor_only_applies_preview_to_draft(client,monkeypatch):
+    from app import assistant_api
+    state=server.store.read()['state'];plan=state['plan'][0]
+    class Fake:
+        def interpret(self,messages,**options):
+            assert 'baseLessons' not in messages[0]['content']
+            assert options['max_output_tokens']==1400
+            return {'reply':'Изменить часы выбранной строки','changes':[{'planId':plan['id'],'hours':4}]},'fake'
+    monkeypatch.setattr(assistant_api,'connection',lambda:Fake())
+    client.post('/api/annual/start',json={'revision':1})
+    r=client.post('/api/annual/advice',json={'revision':2,'workspace':'draft','message':'Изменить часы'});assert r.status_code==200,r.text
+    preview=r.json()
+    assert server.store.read()['state']['plan']==state['plan']
+    r=client.post('/api/annual/advice/apply',json={'revision':2,'previewId':preview['previewId']});assert r.status_code==200,r.text
+    assert r.json()['state']['plan'][0]['hours']==4
+    assert server.store.read()['state']['plan']==state['plan']
+    assert client.post('/api/annual/advice/apply',json={'revision':2,'previewId':preview['previewId']}).status_code==409
+
+
 @pytest.mark.parametrize('problem',['gap','pair_incomplete'])
 def test_publication_blocks_student_gaps_and_incomplete_pairs(client,problem):
     client.post('/api/annual/start',json={'revision':1})

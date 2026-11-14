@@ -1223,6 +1223,7 @@ app.include_router(extras_router)
 from .constraint_api import router as constraints_router
 app.include_router(constraints_router)
 from .annual_workspace import router as annual_router
+from . import annual_advisor
 app.include_router(annual_router)
 from .update_api import router as update_router
 app.include_router(update_router)
