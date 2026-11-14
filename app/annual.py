@@ -61,6 +61,7 @@ def _build_week(state, *, local, seconds):
     occupied = defaultdict(list)
     subject_day = defaultdict(list)
     choices = []
+    sync_ranks={}
     costs = []
     change_costs=[]
     policy={d:profiles(state,d) for d in range(5)};comfort=[]
@@ -81,7 +82,10 @@ def _build_week(state, *, local, seconds):
             records = []
             for j in range(duration):
                 record = deepcopy(old[j]) if j<len(old) else {'id':uuid4().hex,'classIds':list(plan['classIds']),'teacherIds':list(plan['teacherIds']),'subjectId':plan['subjectId'],'roomIds':list(plan.get('roomIds',[])),'locked':False,'note':'Расставлено по учебному плану'}
-                record['planId'] = plan['id']; used_ids.add(record['id']); records.append(record)
+                record['planId'] = plan['id']
+                if 'groupIndex' in plan:record['groupIndex']=plan['groupIndex']
+                else:record.pop('groupIndex',None)
+                used_ids.add(record['id']); records.append(record)
             options = []
             for d in range(5):
                 for p in range(1,periods-duration+2):
@@ -120,6 +124,10 @@ def _build_week(state, *, local, seconds):
             if not options:return {'status':'infeasible','message':'Для занятия нет разрешённого времени.','problems':[', '.join(ix['classes'][c]['name'] for c in plan['classIds'])+' · '+ix['subjects'][plan['subjectId']]['name']]}
             model.add_exactly_one([v for v,_,_ in options])
             rank=sum(v*(d*periods+p) for v,d,p in options)
+            if plan.get('syncGroup'):
+                key=(plan['syncGroup'],offset)
+                if key in sync_ranks:model.add(rank==sync_ranks[key])
+                else:sync_ranks[key]=rank
             if not pinned:
                 if previous is not None:model.add(rank>previous)
                 previous=rank

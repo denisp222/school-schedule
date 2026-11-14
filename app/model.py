@@ -74,11 +74,12 @@ def week_dates(day: date) -> list[str]:
 
 
 def lesson_key(lesson: dict) -> tuple:
-    return (
+    key = (
         tuple(sorted(lesson.get("classIds") or [])),
         lesson.get("subjectId", ""),
         tuple(sorted(lesson.get("teacherIds") or [])),
     )
+    return key+(lesson['groupIndex'],) if 'groupIndex' in lesson else key
 
 
 def signature(lesson: dict | None):
@@ -632,6 +633,8 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
                     raise StateError(f"Занятие одновременно стоит в двух днях: {seen[ident]} и {day_key}.")
                 seen[ident] = day_key
 
+    from .academic import validate as validate_academic
+    validate_academic(state)
     if check_collisions:
         for day_key, lessons in state["days"].items():
             collisions = check_slots(lessons, state)
@@ -903,6 +906,8 @@ def issues(state: dict, lessons: list[dict], day=None, *, gaps: bool = True) -> 
                 add('error' if day and not permitted else 'warning','gap',f"{record['name']}, {label}: окно в {DAYS[d].lower()} ({', '.join(map(str,missing))} ур.).",[])
     from .commitments import conflicts as commitment_conflicts
     out.extend(commitment_conflicts(state,lessons,day))
+    from .academic import sync_issues
+    out.extend(sync_issues(state,lessons,day))
     return out
 
 

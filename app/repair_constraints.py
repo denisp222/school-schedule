@@ -160,6 +160,8 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
             model.add_exactly_one([v for v,p in options]+([cancellation] if cancellation is not None else []))
             if cancellation is not None:model.add_hint(cancellation,int(unit_hint is None or not options))
             choices.append((options,cancellation))
+    from .academic import bind_daily
+    bind_daily(model,units,choices,state,day)
     occupancy={}
     for key,vs in slots.items():
         o=model.new_bool_var('o'+str(len(occupancy)));model.add(sum(vs)==o);occupancy[key]=o

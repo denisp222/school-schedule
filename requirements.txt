@@ -9,3 +9,4 @@ ortools==9.15.6755
 pythonnet==3.2.1
 clr_loader==0.3.1
 pywin32==312; sys_platform == 'win32'
+pywinauto==0.6.9; sys_platform == 'win32'

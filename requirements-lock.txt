@@ -9,6 +9,7 @@ cffi==2.0.0
 click==8.5.0
 clr-loader==0.3.1
 colorama==0.4.6
+comtypes==1.4.17
 cryptography==50.0.2
 fastapi==0.162.0
 h11==0.16.0
@@ -39,6 +40,7 @@ python-docx==1.2.0
 pythonnet==3.2.1
 pywin32==312
 pywin32-ctypes==0.2.3
+pywinauto==0.6.9
 setuptools==84.2.1
 six==1.17.0
 starlette==1.10.0

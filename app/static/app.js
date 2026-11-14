@@ -321,12 +321,12 @@ function plural(number, one, few, many) {
 const NAV = [
   { title: 'День', items: [['day', 'Расписание на день', 'calendar'], ['assistant', 'AI-помощник', 'spark'], ['week', 'Неделя', 'grid']] },
   { title: 'Работа', items: [['annual', 'Базовое расписание', 'grid'], ['plan', 'Учебный план', 'plan'], ['rules', 'Ограничения', 'settings'], ['absences', 'Отсутствия', 'absent'], ['journal', 'Журнал изменений', 'book']] },
-  { title: 'Школа', items: [['directory', 'Справочники', 'users'], ['extras', 'Дополнительные занятия', 'calendar'], ['reports', 'Нагрузка', 'chart'], ['settings', 'Настройки', 'settings']] },
+  { title: 'Школа', items: [['directory', 'Справочники', 'users'], ['students','Ученики и экзамены','users'], ['streams','Поточные занятия','grid'], ['extras', 'Дополнительные занятия', 'calendar'], ['reports', 'Нагрузка', 'chart'], ['settings', 'Настройки', 'settings']] },
   { title: '', items: [['history', 'История и копии', 'history'], ['help', 'Как пользоваться', 'help']] },
 ];
 
 const PAGE_TITLES = {
-  assistant: 'AI-помощник',
+  assistant: 'AI-помощник', students:'Ученики и экзамены', streams:'Поточные занятия',
   annual: 'Базовое расписание',
   rules: 'Ограничения',
   day: 'Расписание на день', week: 'Неделя', plan: 'Учебный план', absences: 'Отсутствия',
@@ -1322,6 +1322,7 @@ async function deleteAbsence(id) {
 const KIND_TITLES = { teachers: 'учителя', classes: 'класс', subjects: 'предмет', rooms: 'кабинет', plan: 'строку плана' };
 
 function openEntitySheet(kind, id = '') {
+  if(kind==='plan'&&id){const p=S.data.plan.find(r=>r.id===id);if(p&&(p.classIds.length>1||p.syncGroup||'groupIndex' in p))return editStream(id);}
   const existing = id ? by(kind, id) : null;
   const record = existing || {};
   let body = '';
@@ -1552,7 +1553,7 @@ function renderWeek() {
    -------------------------------------------------------------------------- */
 
 function planKey(lesson) {
-  return JSON.stringify([[...(lesson.classIds || [])].sort(), lesson.subjectId, [...(lesson.teacherIds || [])].sort()]);
+  return JSON.stringify([[...(lesson.classIds || [])].sort(), lesson.subjectId, [...(lesson.teacherIds || [])].sort(), ...(Number.isInteger(lesson.groupIndex)?[lesson.groupIndex]:[])]);
 }
 
 function planPlaced() {
@@ -1963,7 +1964,7 @@ function renderHistory() {
   </tr>`).join('');
   return `
     <div class="page">
-      ${pageHead('История и копии', 'Версии', 'Каждое сохранение создаёт версию. Можно вернуться к предыдущей.', `<button type="button" class="btn ghost" data-action="backup-full">${icon('download')}Резервная копия</button>`)}
+      ${pageHead('История и копии', 'Версии', 'Каждое сохранение создаёт версию. Можно вернуться к предыдущей.', button('Импорт Хронографа','chronograph-import','ghost')+`<button type="button" class="btn ghost" data-action="backup-full">${icon('download')}Резервная копия</button>`)}
       <div class="table-card"><div class="table-scroll"><table class="data">
         <thead><tr><th>Когда</th><th>Действие</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
@@ -2062,7 +2063,7 @@ function render() {
   renderNav();
   renderCrumb();
   const pages = {
-    assistant: renderAssistant, extras: renderExtras, rules: renderConstraints, annual: renderAnnual,
+    students:renderStudents, streams:renderStreams, assistant: renderAssistant, extras: renderExtras, rules: renderConstraints, annual: renderAnnual,
     day: renderDay, week: renderWeek, plan: renderPlan, directory: renderDirectory,
     absences: renderAbsences, journal: renderJournal, reports: renderReports,
     settings: renderSettings, history: renderHistory, help: renderHelp,
@@ -2075,7 +2076,7 @@ function render() {
 }
 
 async function setPage(page) {
-  if(S.workspace==='draft' && !['week','plan','directory','rules','annual'].includes(page)) {S.workspace='live';await loadState();S.annual=null;}
+  if(S.workspace==='draft' && !['week','plan','directory','rules','annual','streams'].includes(page)) {S.workspace='live';await loadState();S.annual=null;}
   closeModal();
   closeSheet();
   if(typeof stopVoiceCapture==='function' && isVoiceBusy())stopVoiceCapture(false);

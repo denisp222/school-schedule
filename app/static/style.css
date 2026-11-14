@@ -1178,3 +1178,13 @@ body{background-image:none;}
 .base-table{width:100%;border-collapse:collapse;min-width:1050px;}.base-table th,.base-table td{border:1px solid var(--line);text-align:left;vertical-align:top;}.base-table thead th{background:var(--paper-2);padding:12px;}.base-table small{display:block;font-weight:400;font-size:10px;white-space:nowrap;margin-top:5px;}.base-table tbody th{position:sticky;left:0;background:var(--card);padding:16px;min-width:150px;z-index:1;}.base-table td{min-width:110px;width:10%;}.base-table .week-edit{min-height:80px;width:100%;text-align:left;padding:12px;border:0;background:transparent;}.base-table .week-edit:hover{background:var(--paper-2);}.base-table hr{border:0;border-top:1px solid var(--line);margin:8px 0;}
 @media(max-width:1100px){.assistant-layout{grid-template-columns:minmax(200px,var(--chat-width,240px)) minmax(0,1fr);gap:18px;}.annual-draft-bar{margin:20px 24px 28px;}}
 @media(max-width:760px){.assistant-layout{grid-template-columns:1fr;}.annual-draft-bar{margin:16px 16px 24px;}.chat-width{display:none;}}
+
+/* Drag the boundary between the conversation list and messages. */
+.assistant-layout{grid-template-columns:min(var(--chat-width,280px),40%) 10px minmax(0,1fr);column-gap:12px;}
+.chat-divider{align-self:stretch;min-height:380px;position:relative;cursor:col-resize;touch-action:none;border-radius:4px;outline-offset:0;}
+.chat-divider::after{content:"";position:absolute;left:4px;top:0;bottom:0;width:2px;background:var(--line);border-radius:2px;}
+.chat-divider:hover::after,.chat-divider:focus-visible::after,.chat-resizing .chat-divider::after{background:var(--terra);width:3px;}
+.chat-resizing,.chat-resizing *{cursor:col-resize!important;user-select:none!important;}
+.history-hidden .chat-divider{display:none;}.assistant-layout.history-hidden{grid-template-columns:minmax(0,1fr);}
+.conversation-sidebar{border-right:0;padding-right:0;}.program-response{margin:22px 0;padding:16px 0;border-block:1px solid var(--line);}.program-response li{line-height:1.7;margin-bottom:8px;}
+@media(max-width:760px){.assistant-layout{grid-template-columns:1fr;}.chat-divider{display:none;}}

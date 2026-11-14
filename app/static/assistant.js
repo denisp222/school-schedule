@@ -80,15 +80,15 @@ function renderAssistant() {
   const response = a.response;
   const currentConditions = S.data.assistantConditions?.[a.date] || [];
   return `<div class="page assistant-page">
-    ${pageHead('', 'AI-помощник', 'Что изменить в расписании?', button('Настройки', 'assistant-settings', 'ghost', 'settings'))}
-    <div class="assistant-tools">${button(S.chatHidden?'Показать диалоги':'Скрыть диалоги','chat-toggle','ghost')}${button('Проверить расписание','school-advisor','ghost','spark')}</div><div class="assistant-layout ${S.chatHidden?'history-hidden':''}" style="--chat-width:${Number(localStorage.getItem('chat-width')||280)}px">${assistantHistoryList()}<div class="assistant-workspace">
+    ${pageHead('', 'AI-помощник', 'Помощь по программе, данные школы и изменения расписания.', button('Настройки', 'assistant-settings', 'ghost', 'settings'))}
+    <div class="assistant-tools">${button(S.chatHidden?'Показать диалоги':'Скрыть диалоги','chat-toggle','ghost')}</div><div class="assistant-layout ${S.chatHidden?'history-hidden':''}" style="--chat-width:${chatWidth()}px">${assistantHistoryList()}<div class="chat-divider" role="separator" aria-label="Изменить ширину диалогов" aria-orientation="vertical" tabindex="0" aria-valuemin="200" aria-valuemax="440" aria-valuenow="${chatWidth()}"></div><div class="assistant-workspace">
       <label class="field assistant-date"><span>День изменений</span><input class="input" id="assistant-date" type="date" value="${esc(a.date)}" ${a.pending ? 'disabled' : ''}></label>
-      ${!ready ? notice(`Для начала добавьте ключ ${a.status.providerName || 'OpenRouter'} в настройках помощника.`) : ''}
+      ${!ready ? notice('Справка по программе и просмотр нагрузки работают без ключа. Для сложных просьб подключите помощника в настройках.') : ''}
       ${currentConditions.length ? `<div class="assistant-existing"><p>Сохранённые условия этого дня учитываются и при обычном подборе.</p><ul>${currentConditions.map(row => `<li>${esc(assistantConditionLabel(row))}</li>`).join('')}</ul>${button('Снять условия дня', 'assistant-clear-conditions', 'ghost')}</div>` : ''}
       <div class="assistant-conversation" aria-label="Диалог с помощником">
         ${a.messages.map(m => `<article class="assistant-message ${m.role === 'user' ? 'from-user' : ''}"><strong>${m.role === 'user' ? 'Вы' : 'AI-помощник'}</strong><p>${esc(m.text || m.content)}</p></article>`).join('')}
       </div>
-      ${response ? `<section class="assistant-understood" aria-labelledby="assistant-understood-title">
+      ${response?.program ? renderProgramResponse(response.program) : ''}${response && !response.program ? `<section class="assistant-understood" aria-labelledby="assistant-understood-title">
         <h2 id="assistant-understood-title">${response.questions.length || response.unsupported.length?'Нужно уточнить':'Проверьте условия'}</h2>
         ${response.questions.map(s => notice(s, 'warn')).join('')}
         ${response.unsupported.map(s => notice('Пока не поддерживается: ' + s, 'warn')).join('')}
@@ -98,7 +98,7 @@ function renderAssistant() {
       ${assistantPreview()}
       <form id="assistant-request-form" class="assistant-composer">
         <label class="field"><span class="sr-only">${a.messages.length ? 'Уточнение или исправление условий' : 'Ваше сообщение'}</span>
-          <textarea class="input assistant-input" id="assistant-message" name="message" rows="4" maxlength="4000" placeholder="Например: учитель отсутствует на втором уроке. Укажите фамилию и класс, для которого нужно изменить расписание." ${a.pending ? 'disabled' : ''}>${esc(a.text)}</textarea>
+          <textarea class="input assistant-input" id="assistant-message" name="message" rows="4" maxlength="4000" placeholder="Например: покажи нагрузку учителя; как сохранить копию; учитель может работать только по пятницам; учитель отсутствует на втором уроке." ${a.pending ? 'disabled' : ''}>${esc(a.text)}</textarea>
         </label>
         ${voiceControls()}
       </form>
@@ -106,6 +106,7 @@ function renderAssistant() {
       <div class="assistant-note assistant-request-status" role="status" aria-live="polite">${esc(a.pending || '')}</div>
       ${a.error ? `<div role="alert">${notice(a.error, 'error')}</div>` : ''}
       <details class="assistant-capabilities"><summary>Что помощник умеет сейчас</summary>
+        <p>Помощь по программе, поиск нужного раздела, просмотр нагрузки, объяснение ограничений и подготовка изменений справочников. Доступность учителя, классное руководство, кабинет, норма часов и сокращения предметов меняются после вашего подтверждения. Справка и просмотр нагрузки работают без платного запроса.</p>
         <p>Отсутствие учителя на весь день или отдельные уроки, точное время начала и предельное время окончания занятий класса, закрепление существующего урока, закрытие кабинета, явная отмена урока.</p>
         <p>Спаренные уроки идут подряд у каждой подгруппы. «Разговоры о важном» — только первым уроком понедельника, в том числе совместные. Если класс приходит ко второму, этот урок можно отменить.</p>
         <p>Совместный урок двух классов у одного из их преподавателей. Для технологии можно отдельно согласовать объединение подгрупп и время их прихода. У каждой подгруппы занятия идут без окон; окна учителей допускаются. Восьмой урок только по явному разрешению на выбранную дату.</p>
@@ -117,7 +118,7 @@ function renderAssistant() {
 
 function assistantReset() {
   if(typeof stopVoiceCapture==='function' && isVoiceBusy())stopVoiceCapture(false);
-  Object.assign(S.ai,{messages:[],text:'',response:null,preview:null,selected:0,error:'',threadId:null});
+  Object.assign(S.ai,{messages:[],text:'',response:null,preview:null,selected:0,error:'',threadId:null,programContext:false});
   localStorage.removeItem('assistant-draft');
 }
 
@@ -141,9 +142,9 @@ async function sendAssistant(form) {
   const message = String(new FormData(form).get('message') || '').trim();
   if (!message) { a.error = 'Напишите, что нужно изменить.'; render(); return; }
   await assistantWork('Помощник разбирает просьбу. Расписание пока не меняется…', async () => {
-    const result=await api('/assistant/interpret',{revision:S.revision,date:a.date,message,threadId:a.threadId,
+    const result=await api('/assistant/interpret',{revision:S.revision,date:a.date,message,threadId:a.threadId,programContext:!!(a.response?.program||a.programContext),
       history:a.messages.filter(m=>!m.error && !m.notice).slice(-10).map(({role,content})=>({role,content}))});
-    a.threadId=result.threadId;
+    a.threadId=result.threadId;a.programContext=!!result.program;
     a.messages.push({role: 'user', content: message});
     const content = JSON.stringify({ date: result.date, reply: result.reply, actions: result.actions,
       questions: result.questions, unsupported: result.unsupported });
@@ -173,13 +174,14 @@ function assistantHistoryList() {
   if(!a.history)ensureAssistantHistory();
   const groups=new Map();for(const row of a.history||[]) {if(!groups.has(row.date))groups.set(row.date,[]);groups.get(row.date).push(row);}
   const rows=[...groups.entries()].sort(([a],[b])=>b.localeCompare(a)).map(([date,items])=>`<section aria-label="Диалоги на ${fmtDate(date)}"><h3 class="conversation-date">${fmtDate(date)}</h3>${items.map(row=>`<div class="conversation-entry"><button class="assistant-history-row ${row.id===a.threadId?'active':''}" data-action="assistant-open-thread" data-id="${esc(row.id)}" aria-current="${row.id===a.threadId?'true':'false'}"><span title="${esc(row.title)}">${esc(row.title)}</span></button><button class="conversation-delete" data-action="assistant-delete-thread" data-id="${esc(row.id)}" aria-label="Удалить диалог: ${esc(row.title)}" title="Удалить диалог">${icon('trash',14)}</button></div>`).join('')}</section>`).join('');
-  return `<aside class="conversation-sidebar" aria-label="Диалоги"><div class="conversation-heading"><h2>Диалоги</h2><label class="chat-width">Ширина<input aria-label="Ширина списка диалогов" type="range" min="200" max="440" value="${Number(localStorage.getItem('chat-width')||280)}" id="chat-width"></label>${button('Новый диалог','assistant-new','ghost','plus')}</div><div class="conversation-list">${!a.history?'<p class="assistant-note">Загружаем диалоги…</p>':rows||'<p class="assistant-note">Здесь появятся ваши диалоги.</p>'}${a.historyMore?button('Показать ещё','assistant-more-history','ghost'):''}</div></aside>`;
+  return `<aside class="conversation-sidebar" aria-label="Диалоги"><div class="conversation-heading"><h2>Диалоги</h2>${button('Новый диалог','assistant-new','ghost','plus')}</div><div class="conversation-list">${!a.history?'<p class="assistant-note">Загружаем диалоги…</p>':rows||'<p class="assistant-note">Здесь появятся ваши диалоги.</p>'}${a.historyMore?button('Показать ещё','assistant-more-history','ghost'):''}</div></aside>`;
 }
 
 async function openAssistantThread(id) {
   const a=S.ai;const thread=await api('/assistant/conversations/'+encodeURIComponent(id));
   assistantReset();a.threadId=thread.id;a.date=thread.date;a.historyOpen=false;
   for(const turn of thread.turns) {
+    if(turn.response)a.programContext=!!turn.response.program;
     a.messages.push({role:'user',content:turn.request});
     if(turn.response) {const r=turn.response;a.messages.push({role:'assistant',content:JSON.stringify({date:r.date,reply:r.reply,actions:r.actions,questions:r.questions,unsupported:r.unsupported}),text:r.reply+(turn.status==='applied'?'\nВариант сохранён.':'')});}
     else a.messages.push({role:'assistant',content:turn.error || 'Запрос не завершён.',error:true,text:turn.error || 'Запрос не завершён.'});

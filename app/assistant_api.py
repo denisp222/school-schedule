@@ -18,6 +18,11 @@ _drafts = PreviewStore(limit=32)
 _previews = PreviewStore(limit=32)
 _lock = Lock()
 
+@router.post('/program/apply')
+def apply_program(body:dict):
+    from .program_assistant import commit
+    return commit(body)
+
 
 def context():
     from . import server
@@ -125,6 +130,13 @@ def interpret(body: dict):
     server = context()
     day = server.require_day(body.get('date', ''))
     current = snapshot(body)
+    from .program_assistant import handle
+    try:program=handle(body,current)
+    except Exception:
+        thread_id,turn_id=history().start(body.get('threadId'),day,str(body.get('message',''))[:4000])
+        history().finish(turn_id,error='Не удалось обработать просьбу по программе. Данные не изменены.',status='error')
+        raise
+    if program is not None:return program
     assistant=connection();status=assistant.status()
     messages=ai_planner.messages_for(current['state'],day,body.get('message'),body.get('history',[]),
                                      full_context=status['paidEnabled'])

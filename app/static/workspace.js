@@ -4,7 +4,7 @@ function renderBaseOverview() {
   const date=addDays(mondayOf(S.date),day),lessons=S.data.baseLessons.filter(l=>Number(l.day)===day);
   const editable=S.workspace==='draft',query=(S.baseQuery||'').toLocaleLowerCase('ru');
   const rows=S.data[kind].filter(r=>!r.archived && r.name.toLocaleLowerCase('ru').includes(query));
-  return `<div class="page base-overview">${pageHead('','Базовая неделя',editable?'Двойной щелчок: изменить урок. Перетаскивание: перенести или обменять.':'Постоянная неделя школы. Для изменений откройте редактор.',`${editable?'':button('Редактировать неделю','base-edit','primary')}${button('По одному классу или учителю','base-individual','ghost')}${button('Проверка и помощь AI','school-advisor','ghost','spark')}`)}
+  return `<div class="page base-overview">${pageHead('','Базовая неделя',editable?'Двойной щелчок: изменить урок. Перетаскивание: перенести или обменять.':'Постоянная неделя школы. Для изменений откройте редактор.',`${editable?'':button('Редактировать неделю','base-edit','primary')}${button('По одному классу или учителю','base-individual','ghost')}`)}
   <div class="toolbar"><div class="segmented">${DAYS.map((d,i)=>`<button data-action="base-day" data-day="${i}" class="${day===i?'active':''}">${esc(d)}</button>`).join('')}</div></div>
   <div class="filter-bar"><div class="segmented">${[['classes','Классы'],['teachers','Учителя'],['rooms','Кабинеты']].map(([k,n])=>`<button data-action="base-kind" data-kind="${k}" class="${kind===k?'active':''}">${n}</button>`).join('')}</div><input class="input" id="base-query" aria-label="Поиск в общей таблице" placeholder="Найти…" value="${esc(S.baseQuery||'')}"></div>
   <div class="table-card"><div class="table-scroll"><table class="base-table"><thead><tr><th>${{classes:'Класс',teachers:'Учитель',rooms:'Кабинет'}[kind]}</th>${S.data.school.bells.map((b,i)=>`<th>${i+1}<small>${esc(b)}</small></th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr><th><button class="text-btn" data-action="base-row" data-id="${esc(r.id)}" data-kind="${kind}">${esc(r.name)}</button></th>${S.data.school.bells.map((b,i)=>{
@@ -47,6 +47,5 @@ document.addEventListener('click',async e=>{
 });
 document.addEventListener('change',e=>{const key=e.target.dataset.absenceFilter;if(key){S[key]=e.target.value;render();}});
 document.addEventListener('input',e=>{
-  if(e.target.id==='chat-width'){const width=Number(e.target.value);document.querySelector('.assistant-layout')?.style.setProperty('--chat-width',width+'px');localStorage.setItem('chat-width',width);}
   if(e.target.id==='base-query'){const pos=e.target.selectionStart;S.baseQuery=e.target.value;render();const field=document.querySelector('#base-query');field.focus();field.setSelectionRange(pos,pos);}
 });

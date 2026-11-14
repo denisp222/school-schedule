@@ -8,7 +8,7 @@ function voiceControls() {
   const label=recording?'Завершить запись':'Записать голосовое сообщение';
   const undo=voice.undoText!==null && S.ai.text===voice.formattedText && !isVoiceBusy() && !S.ai.pending;
   const microphone=S.features?.voice!==false?`<button type="button" class="composer-icon ${recording?'recording':''}" data-action="voice-toggle" title="${label}" aria-label="${label}" aria-pressed="${recording}" ${voice.state!=='idle' && !recording || S.ai.pending?'disabled':''}>${icon(recording?'check':'mic')}</button>`:'';
-  return `<div class="composer-toolbar"><div class="composer-status"><span id="voice-status" role="status" aria-live="polite">${esc(text)}</span>${undo?`<button type="button" class="composer-icon" data-action="voice-undo" title="Вернуть исходный текст" aria-label="Вернуть исходный текст">${icon('undo')}</button>`:''}</div><div class="composer-actions">${recording?`<button type="button" class="composer-icon" data-action="voice-cancel" title="Отменить запись" aria-label="Отменить запись">${icon('close')}</button>`:''}${microphone}<button id="assistant-send" class="btn primary" type="submit" title="Отправить сообщение (Enter)" ${!S.ai.status?.configured || S.ai.pending || isVoiceBusy() || !S.ai.text.trim() || S.ai.text.length>4000?'disabled':''}>Отправить сообщение</button></div></div>`;
+  return `<div class="composer-toolbar"><div class="composer-status"><span id="voice-status" role="status" aria-live="polite">${esc(text)}</span>${undo?`<button type="button" class="composer-icon" data-action="voice-undo" title="Вернуть исходный текст" aria-label="Вернуть исходный текст">${icon('undo')}</button>`:''}</div><div class="composer-actions">${recording?`<button type="button" class="composer-icon" data-action="voice-cancel" title="Отменить запись" aria-label="Отменить запись">${icon('close')}</button>`:''}${microphone}<button id="assistant-send" class="btn primary" type="submit" title="Отправить сообщение (Enter)" ${S.ai.pending || isVoiceBusy() || !S.ai.text.trim() || S.ai.text.length>4000?'disabled':''}>Отправить сообщение</button></div></div>`;
 }
 
 function microphoneError(error) {
@@ -135,7 +135,7 @@ document.addEventListener('click',e=>{
 document.addEventListener('input',e=>{if(e.target.id==='assistant-message') {
   if(voice.error && voice.state==='idle') {voice.error='';voice.warning=false;document.querySelector('.voice-error')?.remove();}
   const send=document.querySelector('#assistant-send');
-  if(send)send.disabled=!S.ai.status?.configured || isVoiceBusy() || !!S.ai.pending || !e.target.value.trim() || e.target.value.length>4000;
+  if(send)send.disabled=isVoiceBusy() || !!S.ai.pending || !e.target.value.trim() || e.target.value.length>4000;
   if(voice.undoText!==null && e.target.value!==voice.formattedText) {voice.undoText=null;document.querySelector('[data-action="voice-undo"]')?.remove();}
 }});
 document.addEventListener('keydown',e=>{
