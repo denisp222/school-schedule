@@ -94,6 +94,8 @@ def handle(body,snapshot):
         elif field in ('homeroomTeacherId','teacherId','homeroomRoomId','classId'):
             cat='teachers' if field in ('homeroomTeacherId','teacherId') else 'classes' if field=='classId' else 'rooms'
             shown=next((r['name'] for r in state[cat] if r['id']==value),'Не указан')
+        elif field=='subjectIds':
+            names={r['id']:r['name'] for r in state['subjects']};shown=', '.join(names[x] for x in value) or 'Не указаны'
         else:shown=str(value)
         labels.append(f"{record['name']}: {label} → {shown}")
     if checked:
@@ -110,7 +112,7 @@ def handle(body,snapshot):
     log.finish(turn,response=result)
     return result
 
-def field_label(field):return {'maxDays':'рабочих дней','maxDaily':'уроков в день','weeklyTarget':'норма часов','allowed':'разрешённые часы','homeroomRoomId':'кабинет руководителя','homeroomTeacherId':'классный руководитель','size':'численность','firstPeriod':'первый разрешённый урок','capacity':'вместимость','short':'сокращение предмета','teacherCode':'код предмета'}.get(field,field)
+def field_label(field):return {'maxDays':'рабочих дней','maxDaily':'уроков в день','weeklyTarget':'норма часов','allowed':'разрешённые часы','homeroomRoomId':'кабинет руководителя','homeroomTeacherId':'классный руководитель','homeroom':'классное руководство','teacherId':'закреплённый учитель','classId':'закреплённый класс','subjectIds':'предметы','difficulty':'трудность предмета','size':'численность','firstPeriod':'первый разрешённый урок','capacity':'вместимость','short':'сокращение предмета','teacherCode':'код предмета'}.get(field,'значение')
 
 def validate_value(state,kind,field,value):
     bounds={'maxDays':(1,5),'maxDaily':(1,8),'weeklyTarget':(0,60),'size':(0,100),'firstPeriod':(1,7),'capacity':(0,300),'difficulty':(1,12)}
