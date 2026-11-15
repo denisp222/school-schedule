@@ -52,6 +52,10 @@
 !/docs/DETERMINISTIC-REPAIR.md
 !/docs/AUTO-UPDATES.md
 !/docs/CHRONOGRAPH-PARITY.md
+!/docs/DEVELOPMENT.md
+!/docs/media/
+/docs/media/*
+!/docs/media/schedule-demo.png
 __pycache__/
 *.py[cod]
 *.log

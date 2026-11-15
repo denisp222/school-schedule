@@ -1,5 +1,6 @@
 """Inspect staged blobs, not working copies. Never print private matches."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -7,6 +8,12 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+# This exact screenshot was rendered from a separate synthetic project and
+# visually reviewed. Never allow arbitrary working-school screenshots.
+PUBLIC_DEMO_IMAGES = {
+    'docs/media/schedule-demo.png':
+        '60e5d490b829c949895c5240965012a097943ea219ee25c2ef60e09d67ce55ac',
+}
 
 
 def git(*args):
@@ -30,9 +37,14 @@ def check(staged=False):
         bad_path = bool(set(path.parts)&forbidden) or path.suffix.lower() in {'.sqlite3','.db','.docx','.chngf','.hgf','.exe','.dll','.jpg','.png','.bak'}
         bad_path |= path.name in {'seed.json','factory-seed.json','assistant-connection.json','server.json','update-signing-key.txt'} or path.name.startswith('~$')
         if len(path.parts)>1 and path.parts[0] not in allowed_roots:bad_path=True
-        if bad_path and not public_icon:
+        public_demo = name in PUBLIC_DEMO_IMAGES
+        if bad_path and not (public_icon or public_demo):
             problems.append((name,'private or generated path'));continue
         blob = git('show', ':'+name)
+        if public_demo:
+            if hashlib.sha256(blob).hexdigest()!=PUBLIC_DEMO_IMAGES[name]:
+                problems.append((name,'demo image changed: separate privacy review required'))
+            continue
         if public_icon:continue
         try:text = blob.decode('utf-8')
         except UnicodeDecodeError:
