@@ -169,6 +169,8 @@ def problems(state,lesson,day=None):
         assert len(lesson['roomIds'])==1 and lesson['roomIds']==[meta['roomId']]
         assert type(meta['allowBoys']) is bool and type(meta['safetyApproved']) is bool
         room=next(r for r in state['rooms'] if r['id']==meta['roomId'])
+        from .room_policy import allowed as room_allowed
+        assert room_allowed(state,lesson,room)
         assert not room.get('subjectIds') or lesson['subjectId'] in room['subjectIds']
         if any(unit.get('locked') and unit['period']!=lesson['period'] for unit in units):
             return ['Закреплённую пару технологии сначала нужно открепить в редакторе.']

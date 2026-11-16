@@ -294,6 +294,26 @@ def _lessons_at(lessons, field, ident, period):
 
 
 def _teacher_rows(table, state, current, base, update_names: bool = True):
+    from .commitments import matching
+    extras=matching(state,state['_export_day'],include_cancelled=True)
+    original={**state,'externalDays':{},'absences':[]}
+    before_extras=matching(original,state['_export_day'],include_cancelled=True)
+    def extra_text(rows,teacher,period):
+        parts=[]
+        subjects={s['id']:s for s in state['subjects']};rooms={r['id']:r['name'] for r in state['rooms']}
+        learners={r['id']:r for r in state.get('individualLearners',[])}
+        for row in rows:
+            if row['teacherId']!=teacher or not row['first']<=period<=row['last']:continue
+            subject=subjects.get(row.get('subjectId'),{})
+            compact={'Математика':'м','Алгебра':'а','Геометрия':'г','Физика':'ф','География':'гео',
+                     'Английский язык':'англ','Химия':'х','История':'и','Музыка':'муз',
+                     'Труд (технол.)':'т','Физическая культура':'физ','Вероятность и стат.':'в'}
+            code=subject.get('teacherCode') or compact.get(subject.get('name')) or subject.get('short','')
+            learner=learners.get(row.get('learnerId'))
+            label=(learner.get('short') or row['label']) if learner else ''
+            text=' '.join(v for v in ('инд. '+label if row['kind']=='individual' else row['label'],code,rooms.get(row.get('roomId'),'')) if v)
+            parts.append('Отменено: '+text if row.get('cancelled') else text)
+        return '\n'.join(parts)
     rows = table.findall("w:tr", NS)
     teachers = state["teachers"]
     index_t = {t["id"]: t for t in teachers}
@@ -345,6 +365,9 @@ def _teacher_rows(table, state, current, base, update_names: bool = True):
             text = _teacher_text(now, tid, {c["id"]: c for c in state["classes"]},
                                  {s["id"]: s for s in state["subjects"]},
                                  {r["id"]: r for r in state["rooms"]})
+            extra=extra_text(extras,tid,period)
+            red=red or extra!=extra_text(before_extras,tid,period)
+            if extra:text='\n'.join(v for v in (text,extra) if v)
             if not text and red:
                 text = "—"
             change_cell(cell, text, red and state.get('_export_highlight',True), center=(text == "—"))
@@ -359,6 +382,8 @@ def _teacher_rows(table, state, current, base, update_names: bool = True):
         used_rooms = {r for l in current if int(l["period"]) == period for r in l.get("roomIds", [])}
         rooms = []
         for room in state["rooms"]:
+            from .room_policy import available_for_general_use
+            if not available_for_general_use(room):continue
             if room["id"] in used_rooms:
                 continue
             if weekday is not None and unavailable(room, weekday, period):
@@ -495,8 +520,10 @@ def export_docx(state: dict, day: str, audience: str, update_names: bool = True,
         current = lessons_for_day(state, day)
         base = base_for_day(state, day)
         if mode=='base':
-            current=deepcopy([l for l in state['baseLessons'] if l['day']==weekday])
+            from .annual_workspace import effective_week
+            current=deepcopy([l for l in effective_week(state,day) if l['day']==weekday])
             base=deepcopy(current)
+            state={**state,'externalDays':{},'absences':[]}
         _check_template(table,state,current,audience)
         state = dict(state)
         state["_export_day"] = day

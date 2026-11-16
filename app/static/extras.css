@@ -1,4 +1,12 @@
 .extras-page {max-width:1600px;}
+.rotation-toolbar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:18px 0 24px;}
+.individual-tools{margin:0 0 24px;padding:20px;border:1px solid var(--line);border-radius:12px;background:var(--card);}
+.individual-tools .extra-toolbar{margin:0;}
+.individual-tools .rotation-toolbar{margin:18px 0 0;}
+.individual-cycle{display:flex;flex-wrap:wrap;gap:14px;border:1px solid var(--line);border-radius:9px;padding:12px;margin:0 0 18px;}
+.individual-cycle legend{padding:0 5px;font-size:12px;}
+.individual-cycle .check{margin:0;}
+.individual-room-classes{display:grid;grid-template-columns:repeat(auto-fit,minmax(85px,1fr));gap:8px;padding:10px 0;}
 .extra-tabs {margin-bottom:24px;max-width:100%;flex-wrap:wrap;}
 .extra-tabs [aria-selected="true"] {background:var(--card);color:var(--ink);}
 .extra-toolbar {display:flex;align-items:end;gap:16px;flex-wrap:wrap;margin-bottom:22px;}

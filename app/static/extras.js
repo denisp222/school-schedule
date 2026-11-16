@@ -1,16 +1,16 @@
 'use strict';
 
 let extraKind='primary';
-const EXTRAS={week:'',teacher:'',editing:null,pending:false,error:'',payload:null,loaded:'',loading:false,serial:0};
+const EXTRAS={week:'',teacher:'',learner:'',editing:null,pending:false,error:'',payload:null,loaded:'',loading:false,serial:0};
 const EXTRA_TITLES={primary:'Начальные классы',individual:'Индивидуальные занятия',groups:'Подгруппы'};
 
 function extraRows() {
-  return (S.data.externalActivities || []).filter(r=>r.kind===extraKind && (!EXTRAS.teacher || r.teacherId===EXTRAS.teacher));
+  return (S.data.externalActivities || []).filter(r=>r.kind===extraKind && (!EXTRAS.teacher || r.teacherId===EXTRAS.teacher) && (extraKind!=='individual'||!EXTRAS.learner||r.learnerId===EXTRAS.learner));
 }
 
 function extraInWeek(row,weekday) {
   const day=addDays(EXTRAS.week,weekday);
-  return row.weekday===weekday && (!row.start || row.start<=day) && (!row.end || row.end>=day);
+  return row.weekday===weekday && (!row.cycleWeeks || row.cycleWeeks.includes(cycleNumber(day))) && (!row.start || row.start<=day) && (!row.end || row.end>=day);
 }
 
 function ensureExtras() {
@@ -29,8 +29,8 @@ function extraWeekGrid(rows,conflicts) {
   const bad=new Set(conflicts.map(p=>p.externalActivityId));
   return `<div class="extra-grid-scroll"><table class="extra-grid"><caption class="sr-only">Занятость учителей с ${fmtDate(EXTRAS.week)}</caption>
     <thead><tr><th scope="col">Урок</th>${DAYS.map((day,d)=>`<th scope="col">${day}<small>${fmtDate(addDays(EXTRAS.week,d))}</small></th>`).join('')}</tr></thead>
-    <tbody>${Array.from({length:7},(_,n)=>n+1).map(period=>`<tr><th scope="row">${period}</th>${DAYS.map((_,d)=>{
-      const entries=rows.filter(row=>extraInWeek(row,d) && row.first<=period && period<=row.last);
+    <tbody>${Array.from({length:extraKind==='individual'?8:7},(_,n)=>n+1).map(period=>`<tr><th scope="row">${period}</th>${DAYS.map((_,d)=>{
+      const entries=externalForDate(addDays(EXTRAS.week,d)).filter(row=>row.kind===extraKind && (!EXTRAS.teacher||row.teacherId===EXTRAS.teacher) && (extraKind!=='individual'||!EXTRAS.learner||row.learnerId===EXTRAS.learner) && row.first<=period && period<=row.last);
       return `<td>${entries.length?entries.map(row=>`<button type="button" class="extra-slot ${bad.has(row.id)?'has-conflict':''}" data-action="extra-edit" data-id="${esc(row.id)}"><strong>${esc(row.label)}</strong><span>${esc(nameOf('teachers',row.teacherId))}</span>${row.roomId?`<small>Каб. ${esc(nameOf('rooms',row.roomId))}</small>`:''}</button>`).join(''):`<button type="button" class="extra-slot-empty" data-action="extra-new-slot" data-weekday="${d}" data-period="${period}" aria-label="Добавить занятие: ${DAYS[d]}, ${period}-й урок">${icon('plus',14)}</button>`}</td>`;
     }).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
@@ -40,9 +40,10 @@ function extraForm() {
   const title=row.id?'Изменить занятие':'Добавить занятие';
   return `<form class="extra-form" id="extra-activity-form"><h2>${title}</h2><fieldset ${EXTRAS.pending?'disabled':''}>
     <label class="field"><span>${extraKind==='primary'?'Класс':'Название занятий'}</span><input class="input" name="label" value="${esc(row.label)}" maxlength="120" required placeholder="${extraKind==='primary'?'Например, 2а':'Например, индивидуальные занятия 1'}"></label>
+    ${individualFields(row)}
     <label class="field"><span>Преподаватель</span><select class="input" name="teacherId" required><option value="">Выберите преподавателя</option>${S.data.teachers.map(t=>`<option value="${esc(t.id)}" ${row.teacherId===t.id?'selected':''}>${esc(t.name)}</option>`).join('')}</select></label>
     <label class="field"><span>День недели</span><select class="input" name="weekday">${DAYS.map((d,n)=>`<option value="${n}" ${row.weekday===n?'selected':''}>${d}</option>`).join('')}</select></label>
-    <div class="extra-form-pair">${[['first','С урока'],['last','По урок']].map(([name,label])=>`<label class="field"><span>${label}</span><select class="input" name="${name}">${Array.from({length:7},(_,n)=>n+1).map(p=>`<option value="${p}" ${row[name]===p?'selected':''}>${p}</option>`).join('')}</select></label>`).join('')}</div>
+    <div class="extra-form-pair">${[['first','С урока'],['last','По урок']].map(([name,label])=>`<label class="field"><span>${label}</span><select class="input" name="${name}">${Array.from({length:extraKind==='individual'?8:7},(_,n)=>n+1).map(p=>`<option value="${p}" ${row[name]===p?'selected':''}>${p}</option>`).join('')}</select></label>`).join('')}</div>
     <label class="field"><span>Кабинет</span><select class="input" name="roomId"><option value="">Не указан</option>${S.data.rooms.map(r=>`<option value="${esc(r.id)}" ${row.roomId===r.id?'selected':''}>${esc(r.name)}</option>`).join('')}</select></label>
     <details class="extra-dates" ${row.start || row.end?'open':''}><summary>Период действия</summary><p>Без дат занятие повторяется каждую неделю.</p><div class="extra-form-pair"><label class="field"><span>С даты</span><input class="input" type="date" name="start" value="${esc(row.start || '')}"></label><label class="field"><span>По дату</span><input class="input" type="date" name="end" value="${esc(row.end || '')}"></label></div></details>
     <div class="extra-actions"><button type="submit" class="btn primary">${EXTRAS.pending?'Сохраняем…':'Сохранить занятие'}</button><button type="button" class="btn ghost" data-action="extra-cancel">Отмена</button></div>
@@ -64,13 +65,14 @@ function extraGroups() {
 }
 
 function renderExtras() {
-  if(!EXTRAS.week)EXTRAS.week=mondayOf(S.date || S.today);
+  if(!EXTRAS.week)EXTRAS.week=mondayOf([S.date||S.today,S.data.school.rotationStart||''].sort().at(-1));
   ensureExtras();
   const conflicts=(EXTRAS.payload?.conflicts || []).filter(p=>(S.data.externalActivities || []).some(r=>r.id===p.externalActivityId && r.kind===extraKind));
   const rows=extraRows();
   return `<div class="page extras-page">${pageHead('','Дополнительные занятия','Здесь учитываются часы учителей, которых нет в основной таблице.',button('Классный час','class-hour','ghost'))}
     <div class="segmented extra-tabs" role="tablist" aria-label="Дополнительное расписание">${Object.entries(EXTRA_TITLES).map(([kind,title])=>`<button type="button" role="tab" aria-selected="${kind===extraKind}" class="${kind===extraKind?'active':''}" data-action="extra-tab" data-kind="${kind}">${title}</button>`).join('')}</div>
     ${EXTRAS.error?`<div class="extra-error" role="alert">${notice(EXTRAS.error,'error')}</div>`:''}
+    ${extraKind==='individual'?renderIndividualTools():''}
     ${extraKind==='groups'?extraGroups()+`<details class="extra-conflicts"><summary>Дополнительные настройки</summary><p>Исключения для технологии на ${esc(fmtDate(S.date))}. Их также можно описать AI-помощнику.</p><button type="button" class="btn" data-action="technology">Настроить исключения технологии</button></details>`:`<div class="extra-toolbar"><label class="field"><span>Неделя</span><input class="input" id="extra-week" type="date" value="${esc(EXTRAS.week)}"></label><label class="field"><span>Преподаватель</span><select class="input" id="extra-teacher"><option value="">Все преподаватели</option>${S.data.teachers.map(t=>`<option value="${esc(t.id)}" ${EXTRAS.teacher===t.id?'selected':''}>${esc(t.name)}</option>`).join('')}</select></label><button type="button" class="btn primary" data-action="extra-new" ${EXTRAS.pending?'disabled':''}>${icon('plus')}Добавить занятие</button></div>
     ${conflicts.length?`<details class="extra-conflicts"><summary>Пересечения с основным расписанием: ${new Set(conflicts.map(p=>p.date+':'+p.externalActivityId+':'+p.lessonIds.join())).size}</summary><p>Занятость сохранена. Переставьте совпадающие уроки в основном расписании.</p><ul>${[...new Map(conflicts.map(p=>[p.date+p.message,p])).values()].map(p=>`<li>${fmtDate(p.date)}: ${esc(p.message)}</li>`).join('')}</ul></details>`:''}
     <div class="extra-layout"><section class="extra-week" aria-label="Расписание на неделю">${extraWeekGrid(rows,conflicts)}</section><aside>${extraForm()}${extraList(rows,conflicts)}</aside></div>`}
@@ -120,6 +122,8 @@ document.addEventListener('change',event=>{
 function extraRememberField(event) {
   const field=event.target;
   if(!EXTRAS.editing || !field.closest('#extra-activity-form') || !field.name)return;
+  if(field.name==='cycleWeeks'){EXTRAS.editing.cycleWeeks=new FormData(field.form).getAll('cycleWeeks').map(Number);return;}
+  if(field.type==='checkbox'){EXTRAS.editing[field.name]=field.checked;return;}
   EXTRAS.editing[field.name]=['weekday','first','last'].includes(field.name)?Number(field.value):field.value;
 }
 document.addEventListener('input',extraRememberField);
@@ -132,6 +136,10 @@ document.addEventListener('submit',async event=>{
     const record={...EXTRAS.editing,label:String(data.get('label') || '').trim(),teacherId:String(data.get('teacherId') || ''),
       weekday:Number(data.get('weekday')),first:Number(data.get('first')),last:Number(data.get('last')),
       roomId:String(data.get('roomId') || ''),start:String(data.get('start') || ''),end:String(data.get('end') || '')};
+    if(extraKind==='individual') {
+      record.learnerId=String(data.get('learnerId')||'');record.subjectId=String(data.get('subjectId')||'');
+      record.cycleWeeks=data.getAll('cycleWeeks').map(Number);record.allowEighth=data.has('allowEighth');
+    }
     EXTRAS.editing=record;await extraWork('/extras/upsert',{record},'Занятие сохранено.',()=>{EXTRAS.editing=null;});
   }
   if(form.matches('.extra-group-form')) {

@@ -103,6 +103,9 @@ def _build_week(state, *, local, seconds):
                                 if unavailable(record,d,q):invalid=True
                                 if kind=='teachers' and teacher_busy(state,ident,d,q):invalid=True
                                 if kind=='rooms' and room_busy(state,ident,d,q):invalid=True
+                                if kind=='rooms':
+                                    from .room_policy import allowed as room_allowed
+                                    if not room_allowed(state,records[0],record):invalid=True
                                 if kind=='classes' and q<record.get('firstPeriod',1):invalid=True
                                 size=room_student_count(state,records[0],ident) if kind=='rooms' else None
                                 if kind=='rooms' and ((record.get('subjectIds') and plan['subjectId'] not in record['subjectIds']) or (record.get('capacity') and size is not None and size>record['capacity'])):invalid=True

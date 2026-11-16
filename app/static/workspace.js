@@ -1,15 +1,16 @@
 'use strict';
 function renderBaseOverview() {
   const day=Number(S.baseWeekday??0),kind=S.baseKind||'classes',field={classes:'classIds',teachers:'teacherIds',rooms:'roomIds'}[kind];
-  const date=addDays(mondayOf(S.date),day),lessons=S.data.baseLessons.filter(l=>Number(l.day)===day);
+  const date=addDays(S.data.school.rotation?baseCycleMonday():mondayOf(S.date),day),lessons=(S.data.rotationWeeks?.[String(S.rotationWeek||1)]||S.data.baseLessons).filter(l=>Number(l.day)===day);
   const editable=S.workspace==='draft',query=(S.baseQuery||'').toLocaleLowerCase('ru');
   const rows=S.data[kind].filter(r=>!r.archived && r.name.toLocaleLowerCase('ru').includes(query));
   return `<div class="page base-overview">${pageHead('','Базовая неделя',editable?'Двойной щелчок: изменить урок. Перетаскивание: перенести или обменять.':'Постоянная неделя школы. Для изменений откройте редактор.',`${editable?'':button('Редактировать неделю','base-edit','primary')}${button('По одному классу или учителю','base-individual','ghost')}`)}
+  ${rotationControls()}
   <div class="toolbar"><div class="segmented">${DAYS.map((d,i)=>`<button data-action="base-day" data-day="${i}" class="${day===i?'active':''}">${esc(d)}</button>`).join('')}</div></div>
   <div class="filter-bar"><div class="segmented">${[['classes','Классы'],['teachers','Учителя'],['rooms','Кабинеты']].map(([k,n])=>`<button data-action="base-kind" data-kind="${k}" class="${kind===k?'active':''}">${n}</button>`).join('')}</div><input class="input" id="base-query" aria-label="Поиск в общей таблице" placeholder="Найти…" value="${esc(S.baseQuery||'')}"></div>
   <div class="table-card"><div class="table-scroll"><table class="base-table"><thead><tr><th>${{classes:'Класс',teachers:'Учитель',rooms:'Кабинет'}[kind]}</th>${S.data.school.bells.map((b,i)=>`<th>${i+1}<small>${esc(b)}</small></th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr><th><button class="text-btn" data-action="base-row" data-id="${esc(r.id)}" data-kind="${kind}">${esc(r.name)}</button></th>${S.data.school.bells.map((b,i)=>{
-    const list=lessons.filter(l=>l[field].includes(r.id)&&Number(l.period)===i+1);
-    return `<td><button class="week-edit" ${editable?'data-week-edit="1"':''} data-scope="base" data-date="${date}" data-period="${i+1}" data-row-kind="${kind}" data-row="${esc(r.id)}" data-lesson="${esc(list[0]?.id||'')}" draggable="${editable&&list.length?'true':'false'}" aria-label="${esc(r.name)}, урок ${i+1}">${list.map(l=>`<div class="week-subject">${esc(kind==='classes'?subjectShort(l.subjectId):namesOf('classes',l.classIds)+' · '+subjectShort(l.subjectId))}</div><div class="week-meta">${esc(kind==='teachers'?namesOf('rooms',l.roomIds):namesOf('teachers',l.teacherIds)+(kind==='rooms'?'':' · '+namesOf('rooms',l.roomIds)))}</div>`).join('<hr>')||'<span class="week-empty">—</span>'}</button></td>`;
+    const list=lessons.filter(l=>l[field].includes(r.id)&&Number(l.period)===i+1);const external=baseExternalRows(day,i+1,kind,r.id);
+    return `<td><button class="week-edit" ${editable&&(list.length||!external.length)?'data-week-edit="1"':''} data-scope="base" data-date="${date}" data-period="${i+1}" data-row-kind="${kind}" data-row="${esc(r.id)}" data-lesson="${esc(list[0]?.id||'')}" draggable="${editable&&list.length?'true':'false'}" aria-label="${esc(r.name)}, урок ${i+1}">${list.map(l=>`<div class="week-subject">${esc(kind==='classes'?subjectShort(l.subjectId):namesOf('classes',l.classIds)+' · '+subjectShort(l.subjectId))}</div><div class="week-meta">${esc(kind==='teachers'?namesOf('rooms',l.roomIds):namesOf('teachers',l.teacherIds)+(kind==='rooms'?'':' · '+namesOf('rooms',l.roomIds)))}</div>`).join('<hr>')+baseExternalText(external)||'<span class="week-empty">—</span>'}</button></td>`;
   }).join('')}</tr>`).join('')}</tbody></table></div></div>${editable?renderLoadLocator(kind==='rooms'?'classes':kind,''):''}</div>`;
 }
 

@@ -290,6 +290,7 @@ def _relink_plan(state: dict) -> None:
         by_key.setdefault(lesson_key(plan), plan)
     buckets = [state.get("baseLessons", []), state.get("sourceLessons", [])]
     buckets += list(state.get("days", {}).values()) + list(state.get("dayBases", {}).values())
+    buckets += list(state.get('rotationWeeks', {}).values())
     for lessons in buckets:
         for lesson in lessons:
             plan = by_key.get(lesson_key(lesson))
@@ -383,7 +384,7 @@ def normalize_state(raw: dict) -> dict:
         item.setdefault("doubleLessons", False)
         if plan_is_paired(item,{s['id']:s for s in state['subjects']}):item['doubleLessons']=True
         item.setdefault("confirmed", True)
-    for bucket in (state["baseLessons"], state["sourceLessons"],
+    for bucket in (state["baseLessons"], state["sourceLessons"], *state.get('rotationWeeks',{}).values(),
                    *state["days"].values(), *state["dayBases"].values()):
         for lesson in bucket:
             lesson.setdefault("teacherIds", [])
@@ -448,11 +449,15 @@ def _require_refs(state: dict, kind: str, ids, idset: set, where: str):
 def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
     """Validate structure and references.  Returns the same object."""
     state = raw
+    from .rotation import validate as validate_rotation
+    validate_rotation(state)
     if 'annualDraft' in state or 'baseVersions' in state:
         from .annual_workspace import validate as validate_annual
         validate_annual(state)
     from .commitments import validate as validate_commitments
     validate_commitments(state)
+    from .room_policy import validate as validate_room_policy
+    validate_room_policy(state)
     notices=state.get('dayNotices',{})
     if (not isinstance(notices,dict) or len(notices)>1000 or
             any(not isinstance(rows,list) or len(rows)>40 or any(not isinstance(text,str) or len(text)>1000 for text in rows) for rows in notices.values())):
@@ -535,7 +540,7 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
         from pydantic import TypeAdapter,ValidationError
         from .ai_planner import Action
         adapter=TypeAdapter(list[Action])
-        lesson_ids={l['id'] for rows in [state['baseLessons'],*state['days'].values(),*state['dayBases'].values()] for l in rows}
+        lesson_ids={l['id'] for rows in [state['baseLessons'],*state.get('rotationWeeks',{}).values(),*state['days'].values(),*state['dayBases'].values()] for l in rows}
         lesson_ids.update(s['id'] for rows in [*state['days'].values(),*state['dayBases'].values()]
                           for lesson in rows for s in lesson.get('classHour',{}).get('sources',[]))
         for day,rows in conditions.items():
@@ -570,6 +575,10 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
         for lesson in lessons:
             if not isinstance(lesson.get('id'),str) or not lesson['id'] or not lesson.get('classIds') or not lesson.get('teacherIds'):
                 raise StateError('У занятия должны быть идентификатор, класс и преподаватель.')
+            if 'roomExceptions' in lesson:
+                permits=lesson['roomExceptions']
+                if not isinstance(permits,list) or any(not isinstance(r,str) or r not in lesson.get('roomIds',[]) for r in permits):
+                    raise StateError('Разрешение специального кабинета должно относиться к выбранному кабинету урока.')
             if 'groupIndex' in lesson and (type(lesson['groupIndex']) is not int or lesson['groupIndex'] not in (0,1)):
                 raise StateError('Некорректная группа занятия.')
             if lesson.get('joint'):
@@ -769,6 +778,8 @@ def slot_feasible(state,lesson,weekday,period,*,date=None,index=None,check_rooms
         for rid in lesson.get('roomIds',[]):
             record=ix['rooms'].get(rid)
             if not record or unavailable(record,weekday,period) or room_busy(state,rid,key,period):return False
+            from .room_policy import allowed as room_allowed
+            if not room_allowed(state,lesson,record):return False
             if not lesson.get('classHour') and record.get('subjectIds') and lesson['subjectId'] not in record['subjectIds']:return False
             size=room_student_count(state,lesson,rid)
             if record.get('capacity') and size is not None and size>record['capacity']:return False
@@ -848,6 +859,9 @@ def issues(state: dict, lessons: list[dict], day=None, *, gaps: bool = True) -> 
                     add("warning", "qualification",
                         f"{record['name']}: предмет не отмечен в карточке учителя.", [lesson["id"]])
                 if kind == "rooms":
+                    from .room_policy import allowed as room_allowed
+                    if not room_allowed(state,lesson,record):
+                        add('error','room_policy',f"Кабинет {record['name']} недоступен для этого занятия без подходящего разрешения.",[lesson['id']])
                     size = room_student_count(state,lesson,ident) or 0
                     if record.get("capacity") and size > record["capacity"]:
                         add("error", "capacity", f"Кабинет {record['name']} не вмещает класс.", [lesson["id"]])

@@ -2,11 +2,13 @@
 from .rules import is_technology, is_rov, surname_stem, surname_matches
 from copy import deepcopy
 from datetime import date, timedelta
+from uuid import uuid4
 
 from fastapi import APIRouter
 
 from . import commitments
 from .model import lessons_for_day
+from .rotation import number as cycle_number
 
 router = APIRouter(prefix='/api/extras')
 
@@ -56,7 +58,8 @@ def payload(snapshot, week=None):
             problems.append({**issue, 'date': day})
     return {'revision': snapshot['revision'], 'state': state,
             'activities': deepcopy(state.get('externalActivities', [])),
-            'groups': group_rows(state), 'conflicts': problems, 'week': monday.isoformat()}
+            'groups': group_rows(state), 'conflicts': problems, 'week': monday.isoformat(),
+            'cycleWeek':cycle_number(state,monday)}
 
 
 @router.get('')
@@ -111,3 +114,56 @@ def save_groups(body: dict):
         cls.update(groupNames=[n.strip() for n in names], groupRoles=list(roles), groupSizes=list(sizes))
     snapshot = server.store.mutate(revision, 'Уточнены подгруппы технологии', change)
     return payload(snapshot, body.get('week'))
+
+
+@router.post('/learner')
+def save_learner(body: dict):
+    server=context();raw=body.get('record')
+    if not isinstance(raw,dict) or set(raw)-{'id','name','classId','allowGaps','short'}:
+        raise ValueError('Укажите индивидуального ученика и его класс.')
+    def change(state):
+        record={**raw,'id':raw.get('id') or uuid4().hex}
+        rows=state.setdefault('individualLearners',[])
+        old=next((n for n,r in enumerate(rows) if r['id']==record['id']),None)
+        if old is None:rows.append(record)
+        else:rows[old]=record
+    return payload(server.store.mutate(server.require_revision(body),'Индивидуальный ученик',change),body.get('week'))
+
+
+@router.post('/cycle')
+def save_cycle(body: dict):
+    server=context()
+    def change(state):
+        cycle={'length':4,'anchor':body.get('anchor')}
+        state['school']['rotation']=cycle
+        state.setdefault('rotationWeeks',{str(w):deepcopy(state['baseLessons']) for w in range(1,5)})
+    return payload(server.store.mutate(server.require_revision(body),'Настроен четырёхнедельный цикл',change),body.get('week'))
+
+
+@router.post('/day')
+def save_day(body: dict):
+    server=context();day=server.require_day(body.get('date',''));raw=body.get('record')
+    if not isinstance(raw,dict):raise ValueError('Выберите индивидуальное или дополнительное занятие.')
+    def change(state):
+        rows=deepcopy(commitments.matching({**state,'absences':[]},day,include_cancelled=True))
+        row=commitments.normalize_record(raw)
+        row.setdefault('id',uuid4().hex)
+        if row['weekday']!=date.fromisoformat(day).weekday():raise ValueError('Перенос на другую дату выполняется отдельно.')
+        old=next((n for n,r in enumerate(rows) if r['id']==row['id']),None)
+        if old is None:rows.append(row)
+        else:rows[old]=row
+        # Validate room/teacher/pupil occupancy without persisting a collision.
+        commitments.validate(state,_rows=rows)
+        candidate={**state,'externalDays':{**state.get('externalDays',{}),day:rows}}
+        problems=commitments.conflicts(candidate,lessons_for_day(state,day),day)
+        if problems:raise ValueError(problems[0]['message'])
+        state.setdefault('externalDays',{})[day]=rows
+    return payload(server.store.mutate(server.require_revision(body),'Изменены дополнительные занятия на '+day,change),day)
+
+
+@router.get('/individual-report')
+def individual_report(week: str|None=None,learnerId: str=''):
+    from fastapi.responses import Response
+    from .individual_report import export
+    state=context().store.read()['state']
+    return Response(export(state,selected_monday(week),learnerId),media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',headers={'Content-Disposition':'attachment; filename="individual-schedule.docx"'})

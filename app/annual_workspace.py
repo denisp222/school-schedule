@@ -14,7 +14,7 @@ CATALOGS=('teachers','classes','rooms','subjects')
 def clean_project(state):
     result=deepcopy(state)
     result.pop('annualDraft',None);result.pop('baseVersions',None)
-    for key in ('days','dayBases','assistantConditions','dayNotices'):result[key]={}
+    for key in ('days','dayBases','assistantConditions','dayNotices','externalDays'):result[key]={}
     for key in ('journal','absences'):result[key]=[]
     from .class_hours import fill_leaders,sync_labels
     fill_leaders(result);sync_labels(result)
@@ -22,10 +22,8 @@ def clean_project(state):
 
 
 def effective_week(state,day):
-    versions=state.get('baseVersions',[])
-    eligible=[v for v in versions if v['start']<=str(day)]
-    if eligible:return max(eligible,key=lambda v:v['start'])['lessons']
-    return min(versions,key=lambda v:v['start'])['lessons'] if versions else state['baseLessons']
+    from .rotation import week
+    return week(state,day)
 
 
 def validate(state):
@@ -48,12 +46,28 @@ def validate(state):
             if not isinstance(row['lessons'],list):raise ValueError()
             old=clean_project(state);old['baseLessons']=deepcopy(row['lessons'])
             old['plan']=deepcopy(row.get('plan',state['plan']))
+            old.pop('rotationWeeks',None);old['school'].pop('rotation',None)
+            if row.get('rotation'):
+                old['school']['rotation']=deepcopy(row['rotation'])
+                old['rotationWeeks']=deepcopy(row['rotationWeeks'])
+            old['externalActivities']=deepcopy(row.get('externalActivities',[]))
+            old['externalDays']={}
             validate_state(old)
         except (KeyError,TypeError,ValueError):raise ValueError('Повреждена редакция базового расписания.') from None
 
 
 def publication_issues(state):
     from .model import issues
+    if state.get('rotationWeeks'):
+        from .rotation import editing_week,project
+        combined=[]
+        for week in range(1,5):
+            token=editing_week.set(week)
+            try:
+                work=project(state,week);work.pop('rotationWeeks',None)
+                combined.extend({**row,'message':f'Неделя {week}: '+row['message'],'cycleWeek':week} for row in publication_issues(work))
+            finally:editing_week.reset(token)
+        return combined
     checks=issues(state,state['baseLessons'],gaps=True)
     # Incomplete pairs are useful while editing a draft, but may not become
     # a permanent week. Teacher gaps deliberately remain unrestricted.
@@ -68,7 +82,8 @@ class DraftStore:
     def read(self):
         value=self.main.read();draft=value['state'].get('annualDraft')
         if not draft:raise ValueError('Сначала создайте черновик базового расписания.')
-        return {'revision':value['revision'],'state':deepcopy(draft['state']),'savedAt':draft['updated']}
+        from .rotation import project
+        return {'revision':value['revision'],'state':project(draft['state']),'savedAt':draft['updated']}
 
     def last_saved_at(self):return self.main.last_saved_at()
 
@@ -78,13 +93,15 @@ class DraftStore:
         def change(state):
             draft=state.get('annualDraft')
             if not draft:raise ValueError('Черновик больше не найден.')
-            work=deepcopy(draft['state']);result=fn(work)
+            from .rotation import project,merge
+            work=project(draft['state']);result=fn(work)
             draft.setdefault('undo',[]).append(deepcopy(draft['state']))
             draft['undo']=draft['undo'][-5:];draft['redo']=[]
-            draft['state']=validate_state(work if result is None else result)
+            draft['state']=validate_state(merge(draft['state'],work if result is None else result))
             draft['updated']=Store.now()
         saved=self.main.mutate(revision,'Черновик: '+label,change)
-        return {'revision':saved['revision'],'state':deepcopy(saved['state']['annualDraft']['state']),'savedAt':saved['savedAt']}
+        from .rotation import project
+        return {'revision':saved['revision'],'state':project(saved['state']['annualDraft']['state']),'savedAt':saved['savedAt']}
 
 
 def context():
@@ -170,13 +187,18 @@ def publish(body:dict):
         if errors:raise ValueError('Сначала исправьте ошибки черновика: '+errors[0]['message'])
         if (report['missing'] or report['extra']) and body.get('acceptIncomplete') is not True:
             raise ValueError('Распределите часы учебного плана перед вводом расписания.')
+        for week,variant in work.get('rotationWeeks',{}).items():
+            other=plan_report({**work,'baseLessons':variant})
+            if (other['missing'] or other['extra']) and body.get('acceptIncomplete') is not True:
+                raise ValueError(f'Распределите часы учебного плана в {week}-й неделе цикла.')
         if not work['baseLessons']:raise ValueError('Нельзя ввести пустое расписание.')
         versions=state.get('baseVersions',[])
         if versions and start<=max(v['start'] for v in versions):raise ValueError('Выберите дату позже начала последней редакции базового расписания.')
         if not versions:
             original_start=min(state['school'].get('start','2026-09-01'),start)
             if original_start==start:raise ValueError('Выберите дату после начала действующего учебного года.')
-            versions=[{'id':uuid4().hex,'start':original_start,'label':'Прежнее расписание','lessons':deepcopy(state['baseLessons']),'plan':deepcopy(state['plan'])}]
+            from .rotation import snapshot as cycle_snapshot
+            versions=[{'id':uuid4().hex,'start':original_start,'label':'Прежнее расписание','lessons':deepcopy(state['baseLessons']),'plan':deepcopy(state['plan']),**cycle_snapshot(state)}]
         for day in list(state['days']):
             if day<start:continue
             if body['keepDays']:state['dayBases'].setdefault(day,base_for_day(state,day))
@@ -184,6 +206,8 @@ def publish(body:dict):
                 for key in ('days','dayBases','assistantConditions','dayNotices'):state.get(key,{}).pop(day,None)
                 for row in state['journal']:
                     if row.get('date')==day:row['active']=False
+        if not body['keepDays']:
+            state['externalDays']={d:rows for d,rows in state.get('externalDays',{}).items() if d<start}
         for kind in CATALOGS:
             incoming=deepcopy(work[kind]);ids={r['id'] for r in incoming}
             for old in state[kind]:
@@ -193,13 +217,24 @@ def publish(body:dict):
                     incoming.append(archived)
             state[kind]=incoming
         state['school']=deepcopy(work['school']);state['plan']=deepcopy(work['plan'])
-        lessons=deepcopy(work['baseLessons']);ids={l['id']:uuid4().hex for l in lessons}
+        if state['school'].get('rotation'):state['school']['rotationStart']=start
+        state['externalActivities']=deepcopy(work.get('externalActivities',[]))
+        state['individualLearners']=deepcopy(work.get('individualLearners',[]))
+        lessons=deepcopy(work['baseLessons']);variants=deepcopy(work.get('rotationWeeks',{}))
+        ids={l['id']:uuid4().hex for rows in [lessons,*variants.values()] for l in rows}
         for lesson in lessons:
             lesson['id']=ids[lesson['id']]
             if lesson.get('splitFrom') in ids:lesson['splitFrom']=ids[lesson['splitFrom']]
+        for rows in variants.values():
+            for lesson in rows:
+                lesson['id']=ids[lesson['id']]
+                if lesson.get('splitFrom') in ids:lesson['splitFrom']=ids[lesson['splitFrom']]
+        if variants:state['rotationWeeks']=variants
+        else:state.pop('rotationWeeks',None)
         state['baseLessons']=lessons
         state['unscheduledLessons']=deepcopy(work.get('unscheduledLessons',[]))
-        versions.append({'id':uuid4().hex,'start':start,'label':'Базовое расписание с '+start,'lessons':deepcopy(lessons),'plan':deepcopy(work['plan'])})
+        from .rotation import snapshot as cycle_snapshot
+        versions.append({'id':uuid4().hex,'start':start,'label':'Базовое расписание с '+start,'lessons':deepcopy(lessons),'plan':deepcopy(work['plan']),**cycle_snapshot(state)})
         state['baseVersions']=versions;state.pop('annualDraft',None)
         return validate_state(state)
     return server.store.mutate(server.require_revision(body),'Введено новое базовое расписание с '+start,change)
@@ -227,4 +262,5 @@ def draft_history(body:dict):
         draft.setdefault(other,[]).append(deepcopy(draft['state']))
         draft[other]=draft[other][-5:];draft['state']=draft[direction].pop();draft['updated']=Store.now()
     saved=server.store.mutate(server.require_revision(body),'Отмена правки черновика' if direction=='undo' else 'Повтор правки черновика',change)
-    return {'revision':saved['revision'],'state':saved['state']['annualDraft']['state']}
+    from .rotation import project
+    return {'revision':saved['revision'],'state':project(saved['state']['annualDraft']['state'])}

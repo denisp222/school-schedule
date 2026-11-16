@@ -86,7 +86,8 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
         count=unit_counts[id(unit)]
         def suitable(r):
             room=ix['rooms'][r]
-            return not unavailable(room,weekday,p) and not room_busy(state,r,day,p) and (unit.get('classHour') or not room.get('subjectIds') or unit['subjectId'] in room['subjectIds']) and (not room.get('capacity') or count is None or count<=room['capacity'])
+            from .room_policy import allowed as room_allowed
+            return room_allowed(state,unit,room) and not unavailable(room,weekday,p) and not room_busy(state,r,day,p) and (unit.get('classHour') or not room.get('subjectIds') or unit['subjectId'] in room['subjectIds']) and (not room.get('capacity') or count is None or count<=room['capacity'])
         options=[current] if all(suitable(r) for r in current) else []
         if locked or fixed_room or len(current)>1 or not allow_room_changes:return options
         # Include rooms freed by other moves, not only rooms free in the base.

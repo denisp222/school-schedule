@@ -34,6 +34,7 @@
 !/tests/test_constraints_and_transfer.py
 !/tests/test_annual_and_update_flow.py
 !/tests/test_program_and_academic.py
+!/tests/test_rotation_and_individuals.py
 /tools/*
 !/tools/check_repository.py
 !/tools/lock_requirements.py

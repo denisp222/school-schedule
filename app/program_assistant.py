@@ -50,7 +50,9 @@ def handle(body,snapshot):
         ids=mentioned_entities(state,text)['teachers'];report=plan_report(state)
         rows=[r for r in report['teachers'] if not ids or r['id'] in ids]
         actual={t['id']:sum(t['id'] in l['teacherIds'] for l in week_lessons(state,day)) for t in state['teachers']}
-        reply='Нагрузка на выбранную неделю:\n'+'\n'.join(f"{r['name']}: в плане {r['plan']} ч, в базовой неделе {r['base']} ч, в выбранной неделе {actual[r['id']]} ч"+(f", норма {r['target']} ч." if r['target'] is not None else '.') for r in rows)
+        from .commitments import week_hours
+        extra=week_hours(state,day)
+        reply='Нагрузка на выбранную неделю:\n'+'\n'.join(f"{r['name']}: в плане основных занятий {r['plan']} ч, в выбранной неделе {actual[r['id']]} основных, {extra['individual'][r['id']]} индивидуальных и {extra['primary'][r['id']]} в начальных классах; всего {actual[r['id']]+extra['individual'][r['id']]+extra['primary'][r['id']]} ч"+(f", норма основных занятий {r['target']} ч." if r['target'] is not None else '.') for r in rows)
         links=[link('reports','Открыть нагрузку'),link('plan','Учебный план')]
     if reply is None and re.search(r'ученик|экзамен|\bегэ\b|\bогэ\b',lower) and not re.search(r'добав|измен|удал|исправ',lower):
         from .ai_planner import mentioned_entities

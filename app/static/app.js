@@ -164,6 +164,7 @@ async function api(path, body, timeoutMs=0) {
     ? {}
     : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
   if(S.workspace==='draft' && !path.startsWith('/annual/') && !path.startsWith('/updates'))options.headers={...options.headers,'X-Schedule-Workspace':'draft'};
+  options.headers={...options.headers,'X-Schedule-Cycle-Week':String(S.rotationWeek||1)};
   let response;
   const controller=timeoutMs?new AbortController():null;
   const timeout=controller?setTimeout(()=>controller.abort(),timeoutMs):null;
@@ -232,7 +233,9 @@ function baseFor(date) {
 
 function datedBaseWeek(date) {
   const versions=[...(S.data.baseVersions||[])].sort((a,b)=>a.start.localeCompare(b.start));
-  return [...versions].reverse().find(v=>v.start<=date)?.lessons || versions[0]?.lessons || S.data.baseLessons;
+  const version=[...versions].reverse().find(v=>v.start<=date)||versions[0];
+  const source=version && version!==versions.at(-1)?version:S.data;
+  return source.rotationWeeks?.[String(cycleNumber(date))] || source.lessons || S.data.baseLessons;
 }
 
 function cellAt(lessons, field, id, period) {
@@ -432,7 +435,7 @@ function rowList() {
     rows = rows.filter((row) => !sameCell(
       current.filter((lesson) => (lesson[field] || []).includes(row.id)),
       base.filter((lesson) => (lesson[field] || []).includes(row.id)),
-    ));
+    ) || (S.preview?previewDay():S.day).externalChanges?.some(change=>[change.before,change.after].some(r=>r&&(kind==='teachers'?r.teacherId===row.id:kind==='rooms'&&r.roomId===row.id))));
   }
   return rows;
 }
@@ -524,6 +527,9 @@ function cellContent(view, lesson, room) {
 
 function lessonCell(row, period, current, base) {
   const red=!sameCell(current,base);
+  const extra=externalCell(row,period,S.preview?previewDay():S.day);
+  if(extra && current.length)return `<div class="cell-stack">${current.map(lesson=>lessonCellSingle(row,period,[lesson],base,red)).join('')}${extra}</div>`;
+  if(extra)return extra;
   if(current.length>1) {
     return `<div class="cell-stack" aria-label="${esc(row.name)}, ${period}-й урок: занятия подгрупп">${current.map(lesson=>lessonCellSingle(row,period,[lesson],base,red)).join('')}</div>`;
   }
@@ -600,6 +606,7 @@ function renderDay() {
   const day=S.preview?previewDay():S.day;
   if (!day) return `<div class="loading"><span class="skeleton wide"></span><span class="skeleton tall"></span></div>`;
   const changes = day.changes || [];
+  const totalChanges=changes.length+(day.externalChanges?.length||0);
   const errors = (day.issues || []).filter((item) => item.level === 'error');
   const seenAbsences = new Set();
   const absences = (day.absences || []).filter((item) => {
@@ -615,10 +622,11 @@ function renderDay() {
     <button type="button" class="btn ghost" data-action="export">${icon('download')}Выгрузить отчёт</button>`;
   const sub = `
     <span>${day.stats.lessons} ${plural(day.stats.lessons, 'занятие', 'занятия', 'занятий')}</span>
+    ${cycleConfig(S.date)?`<span class="dot"></span><span>${day.cycleWeek||cycleNumber(S.date)}-я неделя цикла</span>`:''}
     <span class="dot"></span>
     <span>${S.data.teachers.length} ${plural(S.data.teachers.length, 'учитель', 'учителя', 'учителей')}</span>
     <span class="dot"></span>
-    <span class="pill ${changes.length ? 'terra' : 'green'}">${changes.length ? `Изменений: ${changes.length}` : 'Без изменений'}</span>
+    <span class="pill ${totalChanges ? 'terra' : 'green'}">${totalChanges ? `Изменений: ${totalChanges}` : 'Без изменений'}</span>
     ${errors.length ? `<span class="pill red">${errors.length} ${plural(errors.length, 'конфликт', 'конфликта', 'конфликтов')}</span>` : ''}`;
   const absenceStrip = absences.length ? `
     <div class="absence-strip">
@@ -648,6 +656,7 @@ function renderDay() {
         </div>
         <div class="toolbar-right">
           ${changedActions}
+          ${day.externalChanges?.length?`<button class="text-btn" data-action="external-changes">Дополнительные изменения (${day.externalChanges.length})</button>`:''}
           ${S.preview?'':'<button type="button" class="btn small ghost" data-action="show-load">Распределение часов</button>'}
           <button type="button" class="btn small ghost" data-action="issues">${icon('alert')}Проверка</button>
         </div>
@@ -1117,6 +1126,7 @@ function openLessonSheet(dataset) {
       <div>
         <span class="field-label">Кабинет</span>
         ${roomChecks(lesson.roomIds || [])}
+        ${roomExceptionField(lesson)}
       </div>
       <div class="form-grid two">
         <label class="check"><input type="checkbox" name="locked" ${lesson.locked ? 'checked' : ''}>Закрепить занятие</label>
@@ -1189,6 +1199,7 @@ async function submitLesson(form, context) {
     subjectId: context.existing && context.scope === 'day' ? context.existing.subjectId : data.get('subjectId'),
     teacherIds,
     roomIds: formChecked('roomIds'),
+    roomExceptions:data.has('allowSpecialRoom')?formChecked('roomIds').filter(id=>by('rooms',id)?.usePolicy==='manual'):[],
     locked: data.has('locked'),
   };
   const result = await api('/lesson', {
@@ -1372,6 +1383,7 @@ function openEntitySheet(kind, id = '') {
           <label class="field"><span>Вместимость</span><input class="input" type="number" min="0" max="300" name="capacity" value="${record.capacity || 0}"></label>
           <label class="field"><span>Этаж</span><input class="input" name="floor" value="${esc(record.floor || '')}"></label>
         </div>
+        ${roomPolicyFields(record)}
         <div>
           <span class="field-label">Разрешённые предметы</span>
           ${accessChecks('subjects', record.subjectIds || [])}
@@ -1442,7 +1454,7 @@ async function submitEntity(form, kind, existing) {
   } else if (kind === 'subjects') {
     record = { ...record, name: data.get('name'), short: data.get('short'), teacherCode: data.get('teacherCode'), difficulty: Number(data.get('difficulty')) };
   } else if (kind === 'rooms') {
-    record = { ...record, name: data.get('name'), capacity: Number(data.get('capacity')), floor: data.get('floor'), subjectIds: formChecked('subjectIds'), classId: data.get('classId'), teacherId: data.get('teacherId') };
+    record = { ...record, name: data.get('name'), capacity: Number(data.get('capacity')), floor: data.get('floor'), subjectIds: formChecked('subjectIds'), classId: data.get('classId'), teacherId: data.get('teacherId'),usePolicy:data.get('usePolicy')||'general',allowedTeacherIds:data.get('roomAllowedTeacher')?[data.get('roomAllowedTeacher')]:[],manualClassIds:formChecked('manualClassIds'),subgroupsOnly:data.has('subgroupsOnly') };
   } else if (kind === 'plan') {
     const teacherIds = formChecked('teacherIds');
     if (!teacherIds.length) throw new Error('Выберите учителя.');
@@ -1500,7 +1512,7 @@ function renderWeek() {
   const kind = S.weekKind;
   const id = weekEntityId();
   const field = kind === 'classes' ? 'classIds' : kind==='rooms'?'roomIds':'teacherIds';
-  const monday = mondayOf(S.date);
+  const monday = !S.weekActual&&S.data.school.rotation?baseCycleMonday():mondayOf(S.date);
   const days = [0, 1, 2, 3, 4].map((offset) => addDays(monday, offset));
   const source = S.weekActual
     ? Object.fromEntries(days.map((date) => [date, lessonsFor(date)]))
@@ -1510,11 +1522,12 @@ function renderWeek() {
     const period = index + 1;
     const cells = days.map((date) => {
       const lessons = (source[date] || []).filter((lesson) => (lesson[field] || []).includes(id) && Number(lesson.period) === period);
+      const extra=S.weekActual?externalForDate(date).filter(r=>r.first<=period&&period<=r.last&&(kind==='teachers'?r.teacherId===id:kind==='rooms'&&r.roomId===id)):baseExternalRows(dayIndex(date),period,kind,id);
       const allPeriods = (source[date] || []).filter((lesson) => (lesson[field] || []).includes(id)).map((lesson) => Number(lesson.period));
       const first = Math.min(...allPeriods);
       const last = Math.max(...allPeriods);
-      const gap = !lessons.length && allPeriods.length && period > first && period < last;
-      return `<td class="${gap ? 'week-gap' : ''}"><button type="button" class="week-edit" draggable="${lessons.length && (S.workspace==='draft'||S.weekActual)?'true':'false'}" ${(S.workspace==='draft'||S.weekActual)?'data-week-edit="1"':''} data-lesson="${lessons[0]?.id || ''}" data-date="${date}" data-scope="${S.weekActual ? 'day' : 'base'}" data-row-kind="${kind}" data-row="${id}" data-period="${period}" aria-label="${esc(DAYS[dayIndex(date)] + ', урок ' + period + ': ' + (lessons[0] ? describe(lessons[0]) : 'добавить занятие'))}">${lessons.map(weekCell).join('') || '<span class="week-empty">—</span>'}</button></td>`;
+      const gap = !lessons.length && !extra.length && allPeriods.length && period > first && period < last;
+      return `<td class="${gap ? 'week-gap' : ''}"><button type="button" class="week-edit" draggable="${lessons.length && (S.workspace==='draft'||S.weekActual)?'true':'false'}" ${(S.workspace==='draft'||S.weekActual)?'data-week-edit="1"':''} data-lesson="${lessons[0]?.id || ''}" data-date="${date}" data-scope="${S.weekActual ? 'day' : 'base'}" data-row-kind="${kind}" data-row="${id}" data-period="${period}" aria-label="${esc(DAYS[dayIndex(date)] + ', урок ' + period + ': ' + (lessons[0] ? describe(lessons[0]) : 'добавить занятие'))}">${lessons.map(weekCell).join('')+baseExternalText(extra) || '<span class="week-empty">—</span>'}</button></td>`;
     }).join('');
     return `<tr><th><span class="pnum">${period}</span><small>${esc(bell)}</small></th>${cells}</tr>`;
   }).join('');
@@ -1526,7 +1539,7 @@ function renderWeek() {
   return `
     <div class="page">
       ${button('Общее расписание по дням','base-overview','ghost')}${pageHead('Постоянное расписание', 'Неделя', `${total} ${plural(total, 'занятие', 'занятия', 'занятий')} · ${kind === 'classes' ? 'для класса' : 'для учителя'}`, actions)}
-      ${S.weekActual ? dateStrip() : ''}
+      ${S.weekActual ? dateStrip() : rotationControls()}
       <div class="toolbar">
         <div class="segmented">
           <button type="button" data-action="week-kind" data-value="classes" class="${kind === 'classes' ? 'active' : ''}">Классы</button>
@@ -1817,6 +1830,7 @@ function renderReports() {
     <td class="num">${row.plan}</td>
     <td class="num">${row.base}</td>
     <td class="num">${row.week ?? '—'}</td>
+    <td class="num">${row.individual||0}</td><td class="num">${row.primary||0}</td><td class="num">${row.total??row.week??'—'}</td>
     <td class="num ${row.weekDelta ? 'danger' : 'positive'}">${row.weekDelta > 0 ? '+' : ''}${row.weekDelta} ч</td>
   </tr>`).join('');
   return `
@@ -1830,7 +1844,7 @@ function renderReports() {
       </div>
       <div class="section-head"><h2>Часы учителей</h2><span class="hint">Норма — учебный план — базовая неделя — эта неделя</span></div>
       <div class="table-card"><div class="table-scroll"><table class="data">
-        <thead><tr><th>Учитель</th><th class="num">Норма</th><th class="num">В плане</th><th class="num">База</th><th class="num">Эта неделя</th><th class="num">Отклонение</th></tr></thead>
+        <thead><tr><th>Учитель</th><th class="num">Норма</th><th class="num">В плане</th><th class="num">База</th><th class="num">Основные</th><th class="num">Индив.</th><th class="num">Началка</th><th class="num">Всего</th><th class="num">Отклонение основных</th></tr></thead>
         <tbody>${table}</tbody>
       </table></div></div>
       <div style="margin-top:12px">${notice('Красное отклонение — назначенных часов меньше нормы. Это видно, если в неделе есть отменённые уроки; журнал хранит каждую правку.', 'info')}</div>

@@ -123,9 +123,17 @@ async def local_only(request: Request, call_next):
     if draft and (request.url.path=='/api/lesson' or request.url.path.startswith('/api/lesson/')) and request.method=='POST':
         body=await request.json()
         if body.get('scope')!='base':return JSONResponse({'detail':'В черновике редактируется только базовая неделя.'},status_code=422)
+    from .rotation import editing_week
+    try:
+        cycle_week=int(request.headers.get('x-schedule-cycle-week','1'))
+        if cycle_week not in (1,2,3,4):raise ValueError()
+    except ValueError:
+        return JSONResponse({'detail':'Выберите неделю цикла с первой по четвёртую.'},status_code=422)
+    cycle_token=editing_week.set(cycle_week)
     token=workspace.set('draft' if draft else 'live')
     try:response = await call_next(request)
-    finally:workspace.reset(token)
+    finally:
+        workspace.reset(token);editing_week.reset(cycle_token)
     # Windows registry associations can override mimetypes.guess_type (for
     # example, an editor registers .js as text/plain). Chromium then refuses
     # every UI script under nosniff, leaving only the loading skeleton.
@@ -271,6 +279,8 @@ def _day_payload(state: dict, day: str) -> dict:
             times[str(g)]={'first':min(periods),'last':max(periods)} if periods else None
         group_times[cls['id']]=times
     from .commitments import matching
+    from .commitments import changes as external_changes
+    from .rotation import number as cycle_number
     from .day_preferences import gap_details
     return {
         "date": day,
@@ -283,7 +293,9 @@ def _day_payload(state: dict, day: str) -> dict:
         "groupTimes":group_times,
         "classGapDetails":gap_details(state,lessons),
         "notices":state.get('dayNotices',{}).get(day,[]),
-        "externalActivities":matching(state,day),
+        "externalActivities":matching(state,day,include_cancelled=True),
+        "externalChanges":external_changes(state,day),
+        "cycleWeek":cycle_number(state,day),
         "stats": {
             "lessons": len(lessons),
             "changes": len(changes),
@@ -995,10 +1007,15 @@ def reports(day: str):
     state = project_store().read()["state"]
     week = week_lessons(state, day)
     actual = Counter(t for l in week for t in l["teacherIds"])
+    from .commitments import week_hours
+    additional=week_hours(state,day)
     plan = plan_report(state)
     for row in plan["teachers"]:
         row["week"] = actual[row["id"]]
         row["weekDelta"] = (row["target"] or 0) - actual[row["id"]]
+        row['individual']=additional['individual'][row['id']]
+        row['primary']=additional['primary'][row['id']]
+        row['total']=row['week']+row['individual']+row['primary']
     return {
         "date": day,
         "teachers": plan["teachers"],
@@ -1012,7 +1029,7 @@ def reports(day: str):
             "classes": len(state["classes"]),
             "lessons": len(state["baseLessons"]),
             "planHours": sum(int(p.get("hours") or 0) for p in state["plan"]),
-            "weekLessons": len(week),
+            "weekLessons": len(week)+sum(additional['individual'].values())+sum(additional['primary'].values()),
         },
     }
 

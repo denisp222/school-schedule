@@ -352,6 +352,7 @@ def messages_for(state, day, message, history, *, full_context=False):
     context['verifiedJointRequests']=explicit_joint_requests(state,day,message)
     if full_context:
         from .model import week_dates
+        from .rotation import week as effective_week,number as cycle_number
         dates=week_dates(parse_date(day))
         def records(kind,fields):return [{k:r[k] for k in fields if k in r} for r in state[kind]]
         def full_lessons(rows):return [safe_lesson(l) for l in rows]
@@ -366,7 +367,9 @@ def messages_for(state, day, message, history, *, full_context=False):
             'rooms':records('rooms',('id','name','capacity','subjectIds','teacherId','classId','unavailable')),
             'subjects':records('subjects',('id','name','short','difficulty','preferredPeriods','unavailable','firstMonday','pairedTechnology')),
             'weeklyPlan':records('plan',('id','classIds','teacherIds','subjectId','roomIds','hours','maxPerDay','doubleLessons')),
-            'baseWeek':full_lessons(state['baseLessons']),
+            'cycleWeek':cycle_number(state,day),
+            'baseWeek':full_lessons(effective_week(state,day)),
+            'weekExternalActivities':{d:[{k:r[k] for k in ('teacherId','weekday','first','last','roomId') if k in r} for r in matching(state,d)] for d in dates},
             'datedOverrides':{d:full_lessons(state['days'][d]) for d in dates if d in state['days']},
             'weekConditions':{d:state.get('assistantConditions',{}).get(d,[]) for d in dates},
             'absences':[{k:a[k] for k in ('teacherId','start','end','first','last')} for a in state['absences'] if a['start']<=dates[-1] and a['end']>=dates[0]],
@@ -830,6 +833,6 @@ def commit(state, day, actions, result):
             if not lesson.get('locked'):
                 lesson['assistantPinned'] = True
             lesson['locked'] = True
-    known={l['id'] for rows in [state['baseLessons'],*state['days'].values(),*state['dayBases'].values()] for l in rows}
+    known={l['id'] for rows in [state['baseLessons'],*state.get('rotationWeeks',{}).values(),*state['days'].values(),*state['dayBases'].values()] for l in rows}
     state['assistantConditions'][day]=[r for r in actions if r['type']!='cancel_lesson' or r['lessonId'] in known]
     return state
