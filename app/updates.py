@@ -232,7 +232,8 @@ def launch_installer(installer, folder, payload):
     system = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
     helper=subprocess.Popen([str(system), '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
                       '-EncodedCommand', command], cwd=str(folder),
-                     creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                     creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
+                     stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                      close_fds=True,env=clean_environment())
     try:
         deadline=time.monotonic()+10

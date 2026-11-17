@@ -1,5 +1,5 @@
 """Audit regressions: real behavior on artificial projects, no school data."""
-import base64,json,re,subprocess,sys
+import base64,json,re,subprocess,sys,os
 from copy import deepcopy
 from datetime import date,timedelta
 from io import BytesIO
@@ -98,6 +98,7 @@ def test_update_helper_acknowledges_before_waiting_and_checks_paths(signed,tmp_p
     class Helper:
         def poll(self):return None
     def launch(command,**kwargs):
+        assert not kwargs['creationflags']&subprocess.DETACHED_PROCESS
         script=base64.b64decode(command[-1]).decode('utf-16le');seen.append(script)
         marker=re.search(r"WriteAllText\('([^']+)', 'ready'\)",script).group(1)
         Path(marker).write_text('ready',encoding='utf-8')
@@ -107,6 +108,17 @@ def test_update_helper_acknowledges_before_waiting_and_checks_paths(signed,tmp_p
     assert seen[0].index('Get-FileHash')<seen[0].index('WriteAllText')<seen[0].index('Wait-Process')
     assert not list(tmp_path.glob('helper-ready-*'))
     with pytest.raises(ValueError):updates.install_script(setup,'C:/bad"folder',1,'a'*64)
+
+
+@pytest.mark.skipif(os.name!='nt',reason='Windows update helper')
+def test_real_hidden_powershell_executes_and_acknowledges(signed,tmp_path,monkeypatch):
+    _,payload,_,body=signed;setup=tmp_path/'setup.exe';setup.write_bytes(body)
+    witness=tmp_path/'executed.txt'
+    def script(installer,folder,pid,sha,ready=None):
+        return '[System.IO.File]::WriteAllText('+updates.ps_quote(witness)+", 'ok');[System.IO.File]::WriteAllText("+updates.ps_quote(ready)+", 'ready'); Start-Sleep -Milliseconds 300"
+    monkeypatch.setattr(updates,'install_script',script)
+    updates.launch_installer(setup,tmp_path,payload)
+    assert witness.read_text()=='ok'
 
 
 def test_failed_helper_keeps_application_open_and_allows_retry(signed,tmp_path,monkeypatch):
