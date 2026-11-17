@@ -76,7 +76,8 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
     pins={r['lessonId']:r['period'] for r in conditions if r['type']=='pin_lesson'}
     pins.update({l['id']:l['period'] for l in before if l.get('classHour')})
     pins.update({l['id']:(l.get('technologyJoint') or l['joint'])['period'] for l in before if l.get('joint') or l.get('technologyJoint')})
-    original_room_use={(r,l['period']) for l in before for r in l['roomIds'] if not any(t in teacher_ids or is_absent(state,t,day,l['period']) or unavailable(ix['teachers'][t],weekday,l['period']) or teacher_busy(state,t,day,l['period']) for t in l['teacherIds'])}
+    from .commitments import occupancy
+    external=occupancy(state,day)
     unit_counts={};has_capacity=any(r.get('capacity') for r in state['rooms'])
     def rooms_for(unit,p,locked):
         fixed_room=required_room(state,unit)
@@ -87,13 +88,13 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
         def suitable(r):
             room=ix['rooms'][r]
             from .room_policy import allowed as room_allowed
-            return room_allowed(state,unit,room) and not unavailable(room,weekday,p) and not room_busy(state,r,day,p) and (unit.get('classHour') or not room.get('subjectIds') or unit['subjectId'] in room['subjectIds']) and (not room.get('capacity') or count is None or count<=room['capacity'])
+            return room_allowed(state,unit,room) and not unavailable(room,weekday,p) and (r,p) not in external['rooms'] and (unit.get('classHour') or not room.get('subjectIds') or unit['subjectId'] in room['subjectIds']) and (not room.get('capacity') or count is None or count<=room['capacity'])
         options=[current] if all(suitable(r) for r in current) else []
         if locked or fixed_room or len(current)>1 or not allow_room_changes:return options
         # Include rooms freed by other moves, not only rooms free in the base.
         free=[(r['id'],) for r in sorted(state['rooms'],key=lambda r:r['id']) if suitable(r['id']) and (r['id'],)!=current]
         return options+free
-    def absent(t,p):return t in teacher_ids or is_absent(state,t,day,p) or unavailable(ix['teachers'][t],weekday,p) or teacher_busy(state,t,day,p)
+    def absent(t,p):return t in teacher_ids or is_absent(state,t,day,p) or unavailable(ix['teachers'][t],weekday,p) or (t,p) in external['teachers']
     blocked_pairs={(c,l['subjectId'],t) for l in before for c in l['classIds'] for t in l['teacherIds']
                    if (c,l['subjectId']) in paired and absent(t,l['period'])}
     for old in before:
@@ -210,9 +211,12 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
     gap_weight=(len(units)*max((len(unit['teacherIds']) for _,unit in units),default=1)+1)*loss_weight
     primary=sum(pupil_gaps)*gap_weight+sum(loss)*loss_weight+sum(younger_late)*late_weight+sum(moved)
     model.minimize(primary)
-    if _incumbent:
-        maximum=(_incumbent['stats']['classGapsAfter']*gap_weight+_incumbent['stats']['lostHours']*loss_weight
-                 +_incumbent['stats'].get('youngerLate',0)*late_weight+_incumbent['stats']['moved'])
+    incumbent_cost=(_incumbent or {}).get('search',{}).get('modelCost')
+    if incumbent_cost:
+        # Presentation may count original pupils' lessons across joined groups.
+        # Only the model's own cost can safely prune this model's search.
+        maximum=(incumbent_cost['classGapsAfter']*gap_weight+incumbent_cost['lostHours']*loss_weight
+                 +incumbent_cost['youngerLate']*late_weight+incumbent_cost['moved'])
         model.add(primary<=maximum)
     for previous in excluded:
         identical=[]
@@ -261,6 +265,8 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
         return {'primaryProven':primary_proven,'lostHours':solver.value(sum(loss)),
                 'classGapsAfter':solver.value(sum(pupil_gaps)),'youngerLate':solver.value(sum(younger_late)),
                 'moved':solver.value(sum(moved)), 'placements':placements}
+    search['modelCost']={'classGapsAfter':solver.value(sum(pupil_gaps)),'lostHours':solver.value(sum(loss)),
+                         'youngerLate':solver.value(sum(younger_late)),'moved':solver.value(sum(moved))}
     by_parent=defaultdict(list)
     for n,((old,unit),(options,cancellation)) in enumerate(zip(units,choices),1):
         if cancellation is not None and solver.boolean_value(cancellation):continue

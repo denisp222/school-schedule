@@ -105,7 +105,7 @@ def validate(state, *, _rows=None):
         if 'short' in learner and (not isinstance(learner['short'],str) or len(learner['short'])>24):
             raise ValueError('Сокращение индивидуального ученика должно быть не длиннее 24 знаков.')
         learner_ids.add(learner['id'])
-    seen = set()
+    seen = set();ranges={}
     for row in rows:
         if not isinstance(row, dict) or set(row)-_FIELDS:
             raise ValueError('В дополнительной занятости есть неизвестные поля.')
@@ -156,17 +156,24 @@ def validate(state, *, _rows=None):
             raise ValueError('Начало дополнительной занятости позже её окончания.')
         if not _has_weekday(first, last, row['weekday']):
             raise ValueError('В выбранном диапазоне дат нет указанного дня недели.')
-    for n, row in enumerate(rows):
-        for other in rows[:n]:
-            if (row['weekday'] != other['weekday']
-                    or row['last'] < other['first'] or other['last'] < row['first']):
-                continue
-            same_teacher = row['teacherId'] == other['teacherId']
-            same_room = bool(row.get('roomId') and row.get('roomId') == other.get('roomId'))
-            same_learner=bool(row.get('learnerId') and row.get('learnerId')==other.get('learnerId'))
-            if (same_teacher or same_room or same_learner) and not (row.get('cancelled') or other.get('cancelled')) and _ranges_overlap(row, other, state):
-                resource = 'преподавателя' if same_teacher else 'ученика' if same_learner else 'кабинета'
-                raise ValueError(f'Дополнительная занятость {resource} пересекается: «{other["label"]}» и «{row["label"]}».')
+        ranges[ident]=(first,last)
+    # Compare only records sharing a resource, weekday, period and date range.
+    # Date sorting expires old intervals instead of revisiting all earlier rows.
+    buckets={}
+    for row in sorted(rows,key=lambda r:(ranges[r['id']][0],r['id'])):
+        if row.get('cancelled'):continue
+        start,end=ranges[row['id']]
+        resources=[('преподавателя',row['teacherId'])]
+        if row.get('learnerId'):resources.append(('ученика',row['learnerId']))
+        if row.get('roomId'):resources.append(('кабинета',row['roomId']))
+        for resource,ident in resources:
+            for period in range(row['first'],row['last']+1):
+                key=(resource,ident,row['weekday'],period)
+                active=[other for other in buckets.get(key,[]) if ranges[other['id']][1]>=start]
+                for other in active:
+                    if _ranges_overlap(row,other,state):
+                        raise ValueError(f'Дополнительная занятость {resource} пересекается: «{other["label"]}» и «{row["label"]}».')
+                buckets[key]=active+[row]
     if _rows is None:
         overrides=state.get('externalDays',{})
         if not isinstance(overrides,dict) or len(overrides)>1000:raise ValueError('Не удалось прочитать изменения индивидуальных занятий.')
@@ -222,6 +229,13 @@ def matching(state, day, period=None, *, include_cancelled=False):
         if cancelled and not include_cancelled:continue
         result.append({**row,'cancelled':bool(cancelled)} if include_cancelled else row)
     return result
+
+
+def occupancy(state,day):
+    """Immutable per-search index; never shared across edits or requests."""
+    rows=matching(state,day)
+    return {'teachers':frozenset((r['teacherId'],p) for r in rows for p in range(r['first'],r['last']+1)),
+            'rooms':frozenset((r['roomId'],p) for r in rows if r.get('roomId') for p in range(r['first'],r['last']+1))}
 
 
 def teacher_busy(state, teacher_id, day, period):

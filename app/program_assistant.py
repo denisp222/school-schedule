@@ -121,7 +121,8 @@ def handle(body,snapshot):
 def field_label(field):return {'maxDays':'рабочих дней','maxDaily':'уроков в день','weeklyTarget':'норма часов','allowed':'разрешённые часы','homeroomRoomId':'кабинет руководителя','homeroomTeacherId':'классный руководитель','homeroom':'классное руководство','teacherId':'закреплённый учитель','classId':'закреплённый класс','subjectIds':'предметы','difficulty':'трудность предмета','size':'численность','firstPeriod':'первый разрешённый урок','capacity':'вместимость','short':'сокращение предмета','teacherCode':'код предмета'}.get(field,'значение')
 
 def validate_value(state,kind,field,value):
-    bounds={'maxDays':(1,5),'maxDaily':(1,8),'weeklyTarget':(0,60),'size':(0,100),'firstPeriod':(1,7),'capacity':(0,300),'difficulty':(1,12)}
+    from .schemas import FIELD_BOUNDS
+    bounds=FIELD_BOUNDS
     if field in bounds:
         low,high=bounds[field]
         if type(value) is not int or not low<=value<=high:raise ValueError('Проверьте предложенное число: '+field_label(field))

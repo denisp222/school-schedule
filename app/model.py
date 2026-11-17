@@ -753,7 +753,7 @@ def teacher_busy_at(state: dict, teacher_id: str, day, period: int) -> bool:
     return is_absent(state, teacher_id, day, int(period)) or unavailable(teacher, weekday, int(period)) or teacher_busy(state,teacher_id,day,int(period))
 
 
-def slot_feasible(state,lesson,weekday,period,*,date=None,index=None,check_rooms=True,extra_absent=(),absence_slots=None):
+def slot_feasible(state,lesson,weekday,period,*,date=None,index=None,check_rooms=True,extra_absent=(),absence_slots=None,external_slots=None):
     """Shared static slot rules. Occupancy and daily limits are checked by callers."""
     from .commitments import teacher_busy,room_busy
     ix=index if index is not None else indexes(state)
@@ -769,7 +769,8 @@ def slot_feasible(state,lesson,weekday,period,*,date=None,index=None,check_rooms
     for tid in lesson.get('teacherIds',[]):
         record=ix['teachers'].get(tid)
         absent=(tid,period) in absence_slots if absence_slots is not None else date is not None and is_absent(state,tid,date,period)
-        if not record or tid in extra_absent or absent or unavailable(record,weekday,period) or teacher_busy(state,tid,key,period):return False
+        external=(tid,period) in external_slots['teachers'] if external_slots is not None else teacher_busy(state,tid,key,period)
+        if not record or tid in extra_absent or absent or unavailable(record,weekday,period) or external:return False
     if check_rooms:
         if lesson.get('classHour'):
             from .class_hours import required_room
@@ -777,7 +778,8 @@ def slot_feasible(state,lesson,weekday,period,*,date=None,index=None,check_rooms
             if not expected_room or lesson['roomIds']!=[expected_room]:return False
         for rid in lesson.get('roomIds',[]):
             record=ix['rooms'].get(rid)
-            if not record or unavailable(record,weekday,period) or room_busy(state,rid,key,period):return False
+            external=(rid,period) in external_slots['rooms'] if external_slots is not None else room_busy(state,rid,key,period)
+            if not record or unavailable(record,weekday,period) or external:return False
             from .room_policy import allowed as room_allowed
             if not room_allowed(state,lesson,record):return False
             if not lesson.get('classHour') and record.get('subjectIds') and lesson['subjectId'] not in record['subjectIds']:return False

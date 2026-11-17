@@ -282,6 +282,7 @@ def _day_payload(state: dict, day: str) -> dict:
     from .commitments import changes as external_changes
     from .rotation import number as cycle_number
     from .day_preferences import gap_details
+    external=matching(state,day,include_cancelled=True)
     return {
         "date": day,
         "weekday": parse_date(day).weekday(),
@@ -293,11 +294,11 @@ def _day_payload(state: dict, day: str) -> dict:
         "groupTimes":group_times,
         "classGapDetails":gap_details(state,lessons),
         "notices":state.get('dayNotices',{}).get(day,[]),
-        "externalActivities":matching(state,day,include_cancelled=True),
+        "externalActivities":external,
         "externalChanges":external_changes(state,day),
         "cycleWeek":cycle_number(state,day),
         "stats": {
-            "lessons": len(lessons),
+            "lessons": len(lessons)+sum(r['last']-r['first']+1 for r in external if not r.get('cancelled')),
             "changes": len(changes),
             "cancelled": sum(1 for c in changes if not c["after"]),
             "added": sum(1 for c in changes if not c["before"]),
@@ -512,9 +513,8 @@ def _default_record(kind: str, raw: dict, existing: dict | None = None) -> dict:
                 raise ValueError("Недельная нагрузка должна быть от 0 до 60 часов.")
         else:
             record["weeklyTarget"] = None
-        record["maxDaily"] = int(record.get("maxDaily") or 8)
-        if not (1 <= record["maxDaily"] <= 12):
-            raise ValueError("Дневной предел должен быть от 1 до 12 уроков.")
+        from .schemas import field_integer
+        record["maxDaily"] = field_integer('maxDaily',record.get("maxDaily") or 8,'Дневной предел')
     elif kind == "classes":
         record.setdefault("size", 0)
         record.setdefault("maxDaily", 8)
@@ -522,7 +522,8 @@ def _default_record(kind: str, raw: dict, existing: dict | None = None) -> dict:
         record.setdefault("unavailable", [])
         record.setdefault("template", False)
         record["size"] = int(record["size"] or 0)
-        record["maxDaily"] = int(record["maxDaily"] or 8)
+        from .schemas import field_integer
+        record["maxDaily"] = field_integer('maxDaily',record["maxDaily"] or 8,'Дневной предел')
         record["firstPeriod"] = int(record["firstPeriod"] or 1)
     elif kind == "subjects":
         record.setdefault("short", record.get("name", ""))

@@ -76,7 +76,11 @@ class UpdateManager:
             os.replace(temporary,self.attempt)
             # Only close the timetable after the independent installer helper
             # starts successfully. Failed attempts never run again on startup.
-            updates.launch_installer(self.installer,self.folder,self.payload)
+            try:updates.launch_installer(self.installer,self.folder,self.payload)
+            except Exception:
+                self.attempt.unlink(missing_ok=True)
+                self.view.update(stage='error',message='Не удалось запустить установку. Программа продолжает работать; обновление можно повторить позже.')
+                raise ValueError(self.view['message']) from None
             self.view.update(stage='installing',message='Устанавливаем обновление. Приложение откроется снова.')
             threading.Timer(.8,self.close).start()
         return self.status()

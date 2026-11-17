@@ -32,12 +32,13 @@ def eighth_exception(state):
         rule=school['eighthPeriodException']
         if rule is None:return None
         try:
-            assert type(rule['day']) is int and 0<=rule['day']<=4 and rule['period']==8
-            assert len(rule['classIds'])==len(rule['teacherIds'])==1
-            assert set(rule['classIds'])<={r['id'] for r in state['classes']}
-            assert set(rule['teacherIds'])<={r['id'] for r in state['teachers']}
-            assert rule['subjectId'] in {r['id'] for r in state['subjects']}
-        except (KeyError,TypeError,AssertionError):
+            if not (type(rule['day']) is int and 0<=rule['day']<=4 and type(rule['period']) is int and rule['period']==8
+                    and isinstance(rule['classIds'],list) and isinstance(rule['teacherIds'],list)
+                    and len(rule['classIds'])==len(rule['teacherIds'])==1
+                    and set(rule['classIds'])<={r['id'] for r in state['classes']}
+                    and set(rule['teacherIds'])<={r['id'] for r in state['teachers']}
+                    and rule['subjectId'] in {r['id'] for r in state['subjects']}):raise ValueError()
+        except (KeyError,TypeError,ValueError):
             raise ValueError('Проверьте исключение восьмого урока: день, класс, учителя и предмет.') from None
         return rule
     # Legacy imports: infer only the unique lesson already present on period 8.

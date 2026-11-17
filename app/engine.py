@@ -140,6 +140,8 @@ def repair_problems(state, result):
             cap=teacher.get('weeklyTarget')
             if cap is not None and len(actual)>max(cap,len(original)):errors.append(teacher['name']+': превышена недельная нагрузка.')
             if len({l['day'] for l in actual})>max(teacher.get('maxDays',5),len({l['day'] for l in original})):errors.append(teacher['name']+': превышено число рабочих дней.')
+    from .day_conditions import problems as day_problems
+    errors.extend(day_problems(state,result['date'],state.get('assistantConditions',{}).get(result['date'],[]),result['after']))
     return list(dict.fromkeys(errors))
 
 
@@ -165,7 +167,8 @@ def repair_day(state, day, **kwargs):
         key=sha256(json.dumps([work,iso(day),kwargs,result['before'],result['after']],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
         exact=_exact_cache.get(key)
         if exact is None:
-            exact=solve_day(work,iso(day),kwargs.get('variant',0),kwargs.get('teacher_ids') or [],result['before'],result['after'])
+            exact=solve_day(work,iso(day),kwargs.get('variant',0),kwargs.get('teacher_ids') or [],result['before'],result['after'],
+                            conditions=state.get('assistantConditions',{}).get(iso(day),[]))
             _exact_cache[key]=deepcopy(exact) if exact else False
         if exact:
             exact['otherDays']=result.get('otherDays',{});exact['otherChanges']=result.get('otherChanges',{})
@@ -237,13 +240,15 @@ def is_group_lesson(lesson: dict) -> bool:
 class Grid:
     """One day of lessons with fast occupancy indexes."""
 
-    def __init__(self, state: dict, day_key: str, lessons: list[dict], *,preferences=None,index=None,absence_slots=None):
+    def __init__(self, state: dict, day_key: str, lessons: list[dict], *,preferences=None,index=None,absence_slots=None,external_slots=None):
         self.state = state
         self.day_key = day_key
         self.weekday = parse_date(day_key).weekday()
         rule=state['school']['eighthPeriodException'] if 'eighthPeriodException' in state['school'] else eighth_exception(state)
         self.periods=min(8 if rule or any(l.get('eighthOn')==day_key for l in lessons) else 7,len(state['school']['bells']))
         self.index = index if index is not None else indexes(state)
+        from .commitments import occupancy
+        self.external_slots=external_slots if external_slots is not None else occupancy(state,day_key)
         self.absence_slots = absence_slots if absence_slots is not None else {
             (t['id'],p) for t in state['teachers'] for p in range(1,self.periods+1)
             if is_absent(state,t['id'],day_key,p)}
@@ -256,7 +261,7 @@ class Grid:
             self.insert(lesson)
 
     def copy(self) -> "Grid":
-        return Grid(self.state, self.day_key, [deepcopy(l) for l in self.lessons.values()],preferences=self.preferences,index=self.index,absence_slots=self.absence_slots)
+        return Grid(self.state, self.day_key, [deepcopy(l) for l in self.lessons.values()],preferences=self.preferences,index=self.index,absence_slots=self.absence_slots,external_slots=self.external_slots)
 
     def insert(self, lesson: dict) -> None:
         self.lessons[lesson["id"]] = lesson
@@ -291,7 +296,7 @@ class Grid:
         if not 1 <= period <= self.periods:
             return False
         if not slot_feasible(self.state,lesson,self.weekday,period,date=self.day_key,
-                             index=self.index,absence_slots=self.absence_slots):return False
+                             index=self.index,absence_slots=self.absence_slots,external_slots=self.external_slots):return False
         for cid in lesson.get('classIds',[]):
             for group in groups_for(lesson,cid):
                 holder=self.class_at.get((cid,group,period))
@@ -434,7 +439,7 @@ def _target_day_slot(state: dict, lesson: dict, target_key: str, target_grid: Gr
 
 def _repair_greedy(state: dict, day, *, allow_other_days: bool | None = None,
                reason: str = "", teacher_ids: list[str] | None = None,
-               optimize: bool = False, variant: int = 0) -> dict:
+               optimize: bool = False, variant: int = 0, _canonical: bool = False) -> dict:
     """Return a proposed daily schedule.  The state is never modified."""
     started = perf_counter()
     weights = VARIANT_WEIGHTS[int(variant) % len(VARIANT_WEIGHTS)]
@@ -444,7 +449,7 @@ def _repair_greedy(state: dict, day, *, allow_other_days: bool | None = None,
     weekday = parse_date(day_key).weekday()
     if weekday > 4:
         raise ValueError("В школе пятидневка. Выберите понедельник–пятницу.")
-    state = canonical_state(state)
+    state = state if _canonical else canonical_state(state)
     before = lessons_for_day(state, day_key)
     before_snapshot = deepcopy(before)
     if not before:

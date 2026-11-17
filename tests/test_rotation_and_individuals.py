@@ -151,7 +151,7 @@ def test_word_reports_include_primary_and_individual_lessons_without_addresses(t
     monkeypatch.setattr(exporter,'template_path',lambda *args:tmp_path/'missing.docx')
     content=exporter.export_docx(state,'2026-11-24','teachers')
     with ZipFile(BytesIO(content)) as z:xml=z.read('word/document.xml').decode()
-    assert 'инд.' in xml and 'Индивидуальный ученик 1' in xml and '2а' in xml
+    assert 'инд 6а' in xml and 'Индивидуальный ученик 1' not in xml and '2а' in xml
     assert 'Индивидуальный ученик 1' not in ZipFile(BytesIO(exporter.export_docx(state,'2026-12-01','teachers'))).read('word/document.xml').decode()
     with ZipFile(BytesIO(export(state,date(2026,11,23)))) as z:xml=z.read('word/document.xml').decode()
     assert '1-я неделя' in xml and '4-я неделя' in xml and 'Математика' in xml

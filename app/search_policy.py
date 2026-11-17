@@ -6,8 +6,8 @@ import json
 POLICY_VERSION=3
 
 
-def canonical_state(state):
-    work=deepcopy(state)
+def canonical_state(state,*,clone=True):
+    work=deepcopy(state) if clone else state
     for field in ('teachers','classes','subjects','rooms','plan','baseLessons','sourceLessons','unscheduledLessons'):
         if field in work:work[field].sort(key=lambda row:row['id'])
     for field in ('days','dayBases'):

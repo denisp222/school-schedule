@@ -234,13 +234,13 @@ def test_advisor_only_applies_preview_to_draft(client,monkeypatch):
             return {'reply':'Изменить часы выбранной строки','changes':[{'planId':plan['id'],'hours':4}]},'fake'
     monkeypatch.setattr(assistant_api,'connection',lambda:Fake())
     client.post('/api/annual/start',json={'revision':1})
-    r=client.post('/api/annual/advice',json={'revision':2,'workspace':'draft','message':'Изменить часы'});assert r.status_code==200,r.text
+    r=client.post('/api/annual/advice',headers=DRAFT,json={'revision':2,'workspace':'draft','message':'Изменить часы'});assert r.status_code==200,r.text
     preview=r.json()
     assert server.store.read()['state']['plan']==state['plan']
-    r=client.post('/api/annual/advice/apply',json={'revision':2,'previewId':preview['previewId']});assert r.status_code==200,r.text
+    r=client.post('/api/annual/advice/apply',headers=DRAFT,json={'revision':2,'previewId':preview['previewId']});assert r.status_code==200,r.text
     assert r.json()['state']['plan'][0]['hours']==4
     assert server.store.read()['state']['plan']==state['plan']
-    assert client.post('/api/annual/advice/apply',json={'revision':2,'previewId':preview['previewId']}).status_code==409
+    assert client.post('/api/annual/advice/apply',headers=DRAFT,json={'revision':2,'previewId':preview['previewId']}).status_code==409
 
 
 @pytest.mark.parametrize('problem',['gap','pair_incomplete'])

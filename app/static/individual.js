@@ -35,7 +35,30 @@ function baseExternalRows(day,period,kind,id) {
 }
 
 function baseExternalText(rows) {
-  return rows.map(r=>`<div class="week-subject">${esc(r.kind==='individual'?'инд. '+r.label:r.label)}${r.subjectId?' · '+esc(subjectShort(r.subjectId)):''}</div><div class="week-meta">${esc(nameOf('teachers',r.teacherId))}${r.roomId?' · '+esc(nameOf('rooms',r.roomId)):''}</div>`).join('<hr>');
+  return rows.map(r=>`<div class="extra-week-cell ${externalTone(r)}"><div class="week-subject">${esc(r.subjectId?subjectShort(r.subjectId):'Нач. кл.')}</div>${externalMeta(r)}</div>`).join('');
+}
+
+function individualLabel(id) {
+  const learner=(S.data.individualLearners||[]).find(l=>l.id===id);if(!learner)return 'инд.';
+  const group=S.data.individualLearners.filter(l=>l.classId===learner.classId);
+  return (group.length>1?'инд'+(group.findIndex(l=>l.id===id)+1):'инд')+' '+nameOf('classes',learner.classId);
+}
+
+function compactRoom(id) {
+  const text=nameOf('rooms',id)||'';
+  if(/логоп/i.test(text))return 'лог.';
+  if(/лаб/i.test(text)&&/\d+/.test(text))return text.match(/\d+/)[0]+'л';
+  return text.replace(/^каб(?:инет)?\.?\s*/i,'');
+}
+
+function externalTone(row) {
+  if(row.kind==='primary')return 'extra-primary';
+  const index=(S.data.individualLearners||[]).findIndex(l=>l.id===row.learnerId);
+  return 'extra-individual extra-tone-'+Math.max(0,index)%6;
+}
+
+function externalMeta(row) {
+  return `<span class="meta extra-meta"><span class="extra-label">${esc(row.kind==='individual'?individualLabel(row.learnerId):row.label)}</span>${row.roomId?`<span class="extra-room">${esc(compactRoom(row.roomId))}</span>`:''}</span>`;
 }
 
 function externalForDate(date) {
@@ -69,12 +92,12 @@ function externalCell(row,period,shown) {
   for(const change of shown.externalChanges||[])if(change.before&&change.after&&(change.before.first!==change.after.first||change.before.roomId!==change.after.roomId))records.push({...change.before,movedFrom:true});
   const rows=records.filter(r=>r.first<=period&&period<=r.last&&(S.view==='teachers'?r.teacherId===row.id:r.roomId===row.id));
   if(!rows.length)return '';
-  return rows.map(r=>`<button type="button" class="cell external-activity ${r.cancelled||r.movedFrom||shown.externalChanges?.some(c=>c.id===r.id)?'changed':''}" data-action="extra-open-day" data-id="${esc(r.id)}" title="Изменить занятие на ${fmtDate(S.date)}"><span class="subj">${r.movedFrom?'Перенесено · ':r.cancelled?'Отменено · ':''}${esc(r.subjectId?subjectShort(r.subjectId):r.kind==='primary'?'Начальные классы':'Индивидуально')}</span><span class="meta">${r.kind==='individual'?'инд. ':''}${esc(r.label)}${r.roomId?' · каб. '+esc(nameOf('rooms',r.roomId)):''}</span></button>`).join('');
+  return rows.map(r=>`<button type="button" class="cell external-activity ${externalTone(r)} ${r.cancelled||r.movedFrom||shown.externalChanges?.some(c=>c.id===r.id)?'changed':''}" data-action="extra-open-day" data-id="${esc(r.id)}" title="${esc((r.subjectId?subjectName(r.subjectId):'Начальные классы')+' · '+(r.kind==='individual'?individualLabel(r.learnerId):r.label)+(r.roomId?' · '+nameOf('rooms',r.roomId):''))}" aria-label="${esc((r.kind==='individual'?individualLabel(r.learnerId):r.label)+', '+period+'-й урок'+(r.roomId?', кабинет '+nameOf('rooms',r.roomId):''))}"><span class="subj">${r.movedFrom?'Перен. · ':r.cancelled?'Отм. · ':''}${esc(r.subjectId?subjectShort(r.subjectId):r.kind==='primary'?'Нач. кл.':'Индив.')}</span>${externalMeta(r)}</button>`).join('');
 }
 
 function editIndividualLearner(id) {
   const row=(S.data.individualLearners||[]).find(l=>l.id===id)||{};
-  openSheet({title:row.id?'Индивидуальный ученик':'Добавить индивидуального ученика',body:`<label class="field"><span>Имя или короткое обозначение</span><input class="input" name="name" required maxlength="120" value="${esc(row.name||'')}"></label><label class="field"><span>Класс</span><select class="input" name="classId">${S.data.classes.map(c=>`<option value="${esc(c.id)}" ${c.id===row.classId?'selected':''}>${esc(c.name)}</option>`).join('')}</select></label><label class="field"><span>Сокращение для общего отчёта</span><input class="input" name="short" maxlength="24" value="${esc(row.short||'')}" placeholder="Например, 6а Ив."></label><p class="assistant-note">Уроки этого ученика учитываются отдельно от занятий его класса. Имя не передаётся AI-помощнику.</p>`,foot:button('Отмена','close-sheet','ghost')+'<button type="submit" class="btn primary">Сохранить</button>',submit:async form=>{const d=new FormData(form);await extraWork('/extras/learner',{record:{...row,name:String(d.get('name')).trim(),classId:d.get('classId'),short:String(d.get('short')||'').trim()}},'Ученик сохранён.',()=>closeSheet());}});
+  openSheet({title:row.id?'Индивидуальный ученик':'Добавить индивидуального ученика',body:`<label class="field"><span>Имя или короткое обозначение</span><input class="input" name="name" required maxlength="120" value="${esc(row.name||'')}"></label><label class="field"><span>Класс</span><select class="input" name="classId">${S.data.classes.map(c=>`<option value="${esc(c.id)}" ${c.id===row.classId?'selected':''}>${esc(c.name)}</option>`).join('')}</select></label><p class="assistant-note">В общих таблицах: <strong>${row.id?esc(individualLabel(row.id)):'обозначение по классу'}</strong>. Если в классе два ученика, им присваиваются номера 1 и 2.</p><p class="assistant-note">Уроки этого ученика учитываются отдельно от занятий его класса. Имя не передаётся AI-помощнику.</p>`,foot:button('Отмена','close-sheet','ghost')+'<button type="submit" class="btn primary">Сохранить</button>',submit:async form=>{const d=new FormData(form);await extraWork('/extras/learner',{record:{...row,name:String(d.get('name')).trim(),classId:d.get('classId'),short:row.short||''}},'Ученик сохранён.',()=>closeSheet());}});
 }
 
 function editCycle() {

@@ -1,6 +1,6 @@
 """One editor for the permanent constraints used by every scheduling path."""
 from fastapi import APIRouter
-from .schemas import integer
+from .schemas import integer,field_integer
 
 router=APIRouter(prefix='/api/constraints')
 KINDS=('teachers','classes','rooms','subjects')
@@ -29,7 +29,7 @@ def availability(body:dict):
         record['unavailable']=[{'day':d,'period':p} for d in range(5)
                                for p in range(1,min(8,len(state['school']['bells']))+1) if (d,p) not in slots]
         if kind in ('teachers','classes'):
-            record['maxDaily']=integer(body.get('maxDaily',record.get('maxDaily',8)),'Предел уроков в день',minimum=1,maximum=8)
+            record['maxDaily']=field_integer('maxDaily',body.get('maxDaily',record.get('maxDaily',8)),'Предел уроков в день')
         if kind=='teachers':
             record['maxDays']=integer(body.get('maxDays',record.get('maxDays',5)),'Рабочих дней в неделю',minimum=1,maximum=5)
             if 'homeroomRoomId' in body:
@@ -67,6 +67,6 @@ def eighth(body:dict):
         from .rules import eighth_exception
         eighth_exception(state)
         from .model import period_allowed
-        if any(not period_allowed(state,l) for l in state['baseLessons']):
+        if any(not period_allowed(state,l) for rows in (state.get('rotationWeeks',{}).values() or [state['baseLessons']]) for l in rows):
             raise ValueError('В базовой неделе ещё стоит прежний восьмой урок. Сначала снимите его с расписания.')
     return server.project_store().mutate(revision,'Изменено исключение восьмого урока',change)

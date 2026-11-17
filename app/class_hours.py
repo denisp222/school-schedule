@@ -1,9 +1,5 @@
 """Date-only class hours, explicit class leadership and reversible conversion."""
 from copy import deepcopy
-from functools import lru_cache
-import json
-import os
-from pathlib import Path
 import re
 
 SUBJECT_ID='school-class-hour'
@@ -12,24 +8,6 @@ SUBJECT={'id':SUBJECT_ID,'name':'Классный час','short':'Кл/ч','tea
 
 
 def _name(value):return re.sub(r'[\s.]+','',str(value or '')).lower().replace('ё','е')
-
-
-@lru_cache(maxsize=1)
-def _factory_leaders():
-    # Fill missing legacy assignments from the personalized installer seed.
-    # Match actual names, never numeric IDs of an unrelated school project.
-    candidates=[Path(__file__).with_name('seed.json')]
-    if os.environ.get('SCHEDULE_DATA'):candidates.insert(0,Path(os.environ['SCHEDULE_DATA'])/'factory-seed.json')
-    seed=None
-    for candidate in candidates:
-        try:
-            value=json.loads(candidate.read_text(encoding='utf-8'))
-            if isinstance(value,dict):seed=value;break
-        except (OSError,ValueError):continue
-    if seed is None:return {}
-    teachers={t['id']:_name(t['name']) for t in seed.get('teachers',[])}
-    return {_name(c['name']):teachers[c['homeroomTeacherId']] for c in seed.get('classes',[])
-            if c.get('homeroomTeacherId') in teachers}
 
 
 def leader_map(state):
@@ -48,10 +26,6 @@ def leader_map(state):
                   and l['day']==0 and l['period']==1 and len(l['teacherIds'])==1
                   and 'groupIndex' not in l and is_rov(subjects.get(l['subjectId'],{}))}
         result[cls['id']]=assigned[0] if len(assigned)==1 else next(iter(inferred)) if not assigned and len(inferred)==1 else ''
-        if not result[cls['id']] and not assigned and not inferred:
-            expected=_factory_leaders().get(_name(cls['name']))
-            matches=[t['id'] for t in teachers.values() if expected and _name(t['name'])==expected]
-            if len(matches)==1:result[cls['id']]=matches[0]
     return result
 
 
@@ -217,27 +191,29 @@ def problems(state,lesson,day=None):
     from .model import parse_date,paired_subjects
     meta=lesson.get('classHour')
     if lesson.get('subjectId')!=SUBJECT_ID and not meta:return []
+    def require(condition):
+        if not condition:raise ValueError()
     try:
-        assert isinstance(meta,dict) and {'date','classIds','teacherId','sources'}<=set(meta)<={'date','classIds','teacherId','sources','roomId'}
-        assert parse_date(meta['date']).weekday()==lesson['day'] and lesson['day']<5
-        assert day is None or str(day)==meta['date']
-        assert 1<=lesson['period']<=7 and lesson['subjectId']==SUBJECT_ID
+        require(isinstance(meta,dict) and {'date','classIds','teacherId','sources'}<=set(meta)<={'date','classIds','teacherId','sources','roomId'})
+        require(parse_date(meta['date']).weekday()==lesson['day'] and lesson['day']<5)
+        require(day is None or str(day)==meta['date'])
+        require(1<=lesson['period']<=7 and lesson['subjectId']==SUBJECT_ID)
         if meta.get('roomId'):
-            assert meta['roomId'] in {r['id'] for r in state['rooms']} and lesson['roomIds']==[meta['roomId']]
-        assert isinstance(lesson['roomIds'],list) and len(lesson['roomIds'])<=1
-        assert lesson['classIds']==meta['classIds'] and lesson['teacherIds']==[meta['teacherId']]
-        assert isinstance(meta['classIds'],list) and meta['classIds'] and len(meta['classIds'])==len(set(meta['classIds']))
-        assert set(meta['classIds'])<={c['id'] for c in state['classes']}
-        assert meta['teacherId'] in {t['id'] for t in state['teachers']}
-        assert not any(k in lesson for k in ('groupIndex','splitFrom','joint','technologyJoint','eighthOn'))
-        assert isinstance(meta['sources'],list) and len(meta['sources'])<=2*len(meta['classIds'])
-        assert len({s['id'] for s in meta['sources']})==len(meta['sources'])
+            require(meta['roomId'] in {r['id'] for r in state['rooms']} and lesson['roomIds']==[meta['roomId']])
+        require(isinstance(lesson['roomIds'],list) and len(lesson['roomIds'])<=1)
+        require(lesson['classIds']==meta['classIds'] and lesson['teacherIds']==[meta['teacherId']])
+        require(isinstance(meta['classIds'],list) and meta['classIds'] and len(meta['classIds'])==len(set(meta['classIds'])))
+        require(set(meta['classIds'])<={c['id'] for c in state['classes']})
+        require(meta['teacherId'] in {t['id'] for t in state['teachers']})
+        require(not any(k in lesson for k in ('groupIndex','splitFrom','joint','technologyJoint','eighthOn')))
+        require(isinstance(meta['sources'],list) and len(meta['sources'])<=2*len(meta['classIds']))
+        require(len({s['id'] for s in meta['sources']})==len(meta['sources']))
         paired=paired_subjects(state)
         for source in meta['sources']:
-            assert len(source['classIds'])==1 and source['classIds'][0] in lesson['classIds'] and source['day']==lesson['day'] and 1<=source['period']<=8
-            assert source['subjectId']!=SUBJECT_ID and (source['classIds'][0],source['subjectId']) not in paired
-            assert not any(source.get(k) for k in ('classHour','joint','technologyJoint'))
-    except (AssertionError,KeyError,TypeError,ValueError):
+            require(len(source['classIds'])==1 and source['classIds'][0] in lesson['classIds'] and source['day']==lesson['day'] and 1<=source['period']<=8)
+            require(source['subjectId']!=SUBJECT_ID and (source['classIds'][0],source['subjectId']) not in paired)
+            require(not any(source.get(k) for k in ('classHour','joint','technologyJoint')))
+    except (KeyError,TypeError,ValueError):
         return ['Классный час должен проходить на выбранной дате и уроке у своего классного руководителя, в закреплённом кабинете.']
     return []
 

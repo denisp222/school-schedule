@@ -127,9 +127,9 @@ def run_window(url, data, resources, on_ready, *, qa_browser_arguments='', qa_sc
                         if result!=DialogResult.OK:
                             reply['cancelled']=True
                         else:
-                            from app.file_save import save_with_fallback
+                            from app.file_save import save_bounded
                             logging.info('Export writing file')
-                            path,fallback=file_worker.submit(save_with_fallback,dialog.FileName,content,data/'Готовые отчёты').result(timeout=15)
+                            path,fallback=file_worker.submit(save_bounded,dialog.FileName,content,data/'Готовые отчёты').result(timeout=40)
                             token=uuid4().hex;saved_files[token]=path
                             while len(saved_files)>50:del saved_files[next(iter(saved_files))]
                             reply['saved']=True
@@ -137,6 +137,8 @@ def run_window(url, data, resources, on_ready, *, qa_browser_arguments='', qa_sc
                     except PermissionError:
                         logging.exception('Нет доступа для сохранения экспорта')
                         reply['error']='Не удалось записать файл. Если он открыт в Word, закройте его. Затем сохраните под другим именем или выберите другую папку.'
+                    except ValueError as error:
+                        reply['error']=str(error)
                     except Exception:
                         logging.exception('Ошибка записи экспорта')
                         reply['error']='Не удалось сохранить файл. Проверьте, доступна ли выбранная папка и есть ли свободное место, затем повторите сохранение.'

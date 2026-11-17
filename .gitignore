@@ -35,6 +35,7 @@
 !/tests/test_annual_and_update_flow.py
 !/tests/test_program_and_academic.py
 !/tests/test_rotation_and_individuals.py
+!/tests/test_audit_20261117.py
 /tools/*
 !/tools/check_repository.py
 !/tools/lock_requirements.py
@@ -50,6 +51,7 @@
 !/tools/verify_public_install.py
 /docs/*
 !/docs/AUDIT-2026-11-10.md
+!/docs/AUDIT-2026-11-17.md
 !/docs/DETERMINISTIC-REPAIR.md
 !/docs/AUTO-UPDATES.md
 !/docs/CHRONOGRAPH-PARITY.md

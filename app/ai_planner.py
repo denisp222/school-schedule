@@ -654,22 +654,6 @@ def condition_problems(state, day, actions, result):
             if not matches and cancelled_for_absence(checked,expected,day):continue
             if len(matches)!=1 or matches[0]['period']!=expected['period'] or matches[0].get('classHour')!=expected['classHour'] or problems(checked,matches[0],day):
                 errors.append('Не выполнено назначение классного часа у классного руководителя на выбранном уроке.')
-        if row['type'] in ('class_day','group_day'):
-            overridden={a['groupIndex'] for a in actions if a['type']=='group_day' and a['classId']==row['classId']}
-            for group in ([row['groupIndex']] if row['type']=='group_day' else [g for g in (0,1) if g not in overridden]):
-                periods = [l['period'] for l in after if row['classId'] in l['classIds'] and group in student_groups(l,row['classId'])]
-                if not periods or min(periods) != row['first'] or max(periods) > row['last']:
-                    errors.append('Не выполнено время начала или окончания занятий класса.')
-        if row['type'] == 'pin_lesson':
-            parts = [l for l in after if l['id'] == row['lessonId'] or l.get('splitFrom') == row['lessonId']]
-            source = next((l for l in lessons_for_day(state, day) if l['id'] == row['lessonId']), None)
-            if not source:
-                errors.append('Закреплённый урок больше не найден. Снимите условия дня и задайте их заново.')
-                continue
-            if not parts or any(l['period'] != row['period'] for l in parts) or {t for l in parts for t in l['teacherIds']} != set(source['teacherIds']):
-                errors.append('Не выполнено закрепление урока.')
-        if row['type'] == 'cancel_lesson' and any(l['id'] == row['lessonId'] or l.get('splitFrom') == row['lessonId'] for l in after):
-            errors.append('Не выполнена отмена урока.')
         if row['type']=='join_lessons':
             from .joint_lessons import source_ids
             match=[l for l in after if l.get('joint') and set(source_ids(l))==set(row['lessonIds'])]
@@ -693,7 +677,7 @@ def _variants(state, day, actions, limit=3):
     from .repair_constraints import solve_day
     from .engine import repair_day
     state=canonical_state(state);actions=canonical_actions(actions)
-    work = prepared_state(state, day, actions)
+    work = canonical_state(prepared_state(state, day, actions),clone=False)
     before = lessons_for_day(state, day)
     found = []
     seen = set()
@@ -738,7 +722,7 @@ def _variants(state, day, actions, limit=3):
     # A complete main optimization is mandatory even if greedy already found
     # three candidates. Candidate count must never stop quality improvement.
     for index in range(4):
-        accept(repair_day(work,day,variant=index,fast_only=True))
+        accept(repair_day(work,day,variant=index,fast_only=True,_canonical=True))
     if any(all(r['stats'].get(k,0)==0 for k in ('lostHours','moved','youngerLate','classGapsAfter')) for r in found):
         best=min(found,key=lambda r:(quality_key(r['stats']),_schedule_key(r)))
         best['search']={'deterministic':True,'primaryProven':True,'scope':'all-rooms','certificate':'zero-changes'}

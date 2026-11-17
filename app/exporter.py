@@ -295,24 +295,25 @@ def _lessons_at(lessons, field, ident, period):
 
 def _teacher_rows(table, state, current, base, update_names: bool = True):
     from .commitments import matching
+    from .display_labels import individual_labels,room_label,subject_code
+    labels=individual_labels(state)
     extras=matching(state,state['_export_day'],include_cancelled=True)
     original={**state,'externalDays':{},'absences':[]}
     before_extras=matching(original,state['_export_day'],include_cancelled=True)
     def extra_text(rows,teacher,period):
         parts=[]
         subjects={s['id']:s for s in state['subjects']};rooms={r['id']:r['name'] for r in state['rooms']}
-        learners={r['id']:r for r in state.get('individualLearners',[])}
         for row in rows:
             if row['teacherId']!=teacher or not row['first']<=period<=row['last']:continue
             subject=subjects.get(row.get('subjectId'),{})
-            compact={'Математика':'м','Алгебра':'а','Геометрия':'г','Физика':'ф','География':'гео',
-                     'Английский язык':'англ','Химия':'х','История':'и','Музыка':'муз',
-                     'Труд (технол.)':'т','Физическая культура':'физ','Вероятность и стат.':'в'}
-            code=subject.get('teacherCode') or compact.get(subject.get('name')) or subject.get('short','')
-            learner=learners.get(row.get('learnerId'))
-            label=(learner.get('short') or row['label']) if learner else ''
-            text=' '.join(v for v in ('инд. '+label if row['kind']=='individual' else row['label'],code,rooms.get(row.get('roomId'),'')) if v)
-            parts.append('Отменено: '+text if row.get('cancelled') else text)
+            code=subject_code(subject)
+            label=labels.get(row.get('learnerId'),'инд.') if row['kind']=='individual' else row['label']
+            if row['kind']=='individual' and period==8:
+                # The supplied emergency column is substantially narrower.
+                # Keep the pupil's number, class and room within two lines.
+                label=label.replace('инд','и',1);code=''
+            text=' '.join(v for v in (label,code,room_label(rooms.get(row.get('roomId'),''))) if v)
+            parts.append('отм. '+label if row.get('cancelled') else text)
         return '\n'.join(parts)
     rows = table.findall("w:tr", NS)
     teachers = state["teachers"]

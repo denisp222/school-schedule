@@ -1,7 +1,7 @@
 """Budgeted curriculum advice, previewed and applied only to the annual draft."""
 from copy import deepcopy
 from uuid import uuid4
-from .annual_workspace import router,context,DraftStore,publication_issues
+from .annual_workspace import router,context,DraftStore,publication_issues,workspace
 from .previews import PreviewStore
 from .model import plan_report
 previews=PreviewStore(limit=8)
@@ -25,7 +25,8 @@ def advice(body:dict):
 def proposal(body:dict):
     server=context();snapshot=server.store.read()
     if server.require_revision(body)!=snapshot['revision']:raise ValueError('Расписание изменилось. Повторите запрос.')
-    state=DraftStore(server.store).read()['state'] if body.get('workspace')=='draft' else snapshot['state']
+    selected=workspace.get()
+    state=DraftStore(server.store).read()['state'] if selected=='draft' else snapshot['state']
     text=str(body.get('message','')).strip()
     if not text or len(text)>2000:raise ValueError('Опишите задачу, до 2000 символов.')
     report=plan_report(state)
@@ -46,7 +47,7 @@ def proposal(body:dict):
         seen.add(ident)
         if known[ident]['hours']!=hours:diff.append({'planId':ident,'before':known[ident]['hours'],'hours':hours})
     token=uuid4().hex
-    previews[token]={'revision':snapshot['revision'],'changes':diff,'workspace':body.get('workspace','live')}
+    previews[token]={'revision':snapshot['revision'],'changes':diff,'workspace':selected}
     return {'reply':reply,'changes':diff,'previewId':token,'revision':snapshot['revision']}
 
 @router.post('/advice/apply')
@@ -55,6 +56,7 @@ def apply(body:dict):
     revision=server.require_revision(body)
     if not preview or preview['revision']!=revision:raise ValueError('Предложение устарело. Запросите проверку снова.')
     if preview['workspace']!='draft':raise ValueError('Откройте редактор базовой недели и повторите просьбу.')
+    if workspace.get()!='draft':raise ValueError('Вернитесь в редактор базовой недели для применения предложения.')
     def change(state):
         for row in preview['changes']:
             plan=next(p for p in state['plan'] if p['id']==row['planId'])

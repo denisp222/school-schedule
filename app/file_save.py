@@ -5,6 +5,25 @@ from pathlib import Path
 from uuid import uuid4
 
 
+def save_bounded(filename,content,folder):
+    """A stuck network/OneDrive write must never trap the desktop window."""
+    import base64
+    from .solver_process import calculate
+    result=calculate('file-save',{'filename':str(filename),'folder':str(folder),
+        'content':base64.b64encode(content).decode('ascii')})
+    if result.get('error'):raise ValueError(result['error'])
+    return Path(result['path']),result['fallback']
+
+
+def worker_save(filename,content,folder):
+    import base64
+    try:
+        path,fallback=save_with_fallback(filename,base64.b64decode(content,validate=True),folder)
+        return {'path':str(path),'fallback':fallback}
+    except OSError:
+        return {'error':'Не удалось сохранить файл. Проверьте доступ к папке; если документ открыт в Word, закройте его или выберите другое имя.'}
+
+
 def save_with_fallback(filename, content, folder):
     try:
         write_export(filename,content)

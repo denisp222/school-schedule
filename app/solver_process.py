@@ -26,17 +26,20 @@ def calculate(kind, payload):
                                    creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),capture_output=True)
             if process.returncode or not target.exists():
                 logging.error('Solver worker failed: code=%s stderr=%r',process.returncode,process.stderr[-2000:])
+                if kind=='file-save':raise ValueError('Сохранение прервалось. Попробуйте другую папку или повторите сохранение.')
                 if kind=='speech':raise ValueError('Голосовой ввод прервался. Повторите запись или введите просьбу текстом.')
                 raise ValueError('Расчёт прервался. Ваше расписание сохранено. Попробуйте выполнить подбор ещё раз; если ошибка повторится, закройте и снова откройте приложение.')
             result=json.loads(target.read_text(encoding='utf-8'))
             if 'error' in result:
                 logging.error('Solver worker error: %s',result['error'])
+                if kind=='file-save':raise ValueError('Не удалось сохранить файл. Выберите другую папку и повторите сохранение.')
                 if kind=='speech':raise ValueError('Не удалось включить голосовой ввод. Повторите запись или переустановите приложение свежим установщиком.')
                 raise ValueError('Не удалось рассчитать расписание. Текущее расписание не изменено. Проверьте учебный план и ограничения.')
             return result['result']
         except subprocess.TimeoutExpired as exc:
             logging.error('Calculation timed out: kind=%s stderr=%r',kind,(exc.stderr or b'')[-2000:])
             if kind=='speech':raise ValueError('Распознавание заняло слишком много времени. Попробуйте более короткую запись.') from None
+            if kind=='file-save':raise ValueError('Папка слишком долго не отвечает. Сохранение остановлено; выберите папку на этом компьютере и повторите.') from None
             raise ValueError('Расчёт не завершился вовремя. Текущее расписание сохранено. Попробуйте подобрать изменения только на один день.') from None
 
 
@@ -55,6 +58,9 @@ def worker(source,target):
             from .speech import recognize
             try:result=recognize(**request['payload'])
             except ValueError as exc:result={'error':str(exc)}
+        elif request['kind']=='file-save':
+            from .file_save import worker_save
+            result=worker_save(**request['payload'])
         else:raise ValueError('Unknown calculation')
         response={'result':result}
     except Exception:response={'error':traceback.format_exc()}

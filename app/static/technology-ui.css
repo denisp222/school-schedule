@@ -19,3 +19,24 @@
 .cell.external-activity { background:var(--paper-2); }
 .cell.external-activity .subj { color:var(--ink-2);font-size:11.5px; }
 .cell.external-activity:hover { background:var(--card); }
+
+/* Flat, compact lessons. Room text has its own space and never ellipsizes. */
+.extra-primary{--extra-bg:#f5edda;--extra-ink:#705b2d;}
+.extra-tone-0{--extra-bg:#e5edf8;--extra-ink:#3b5679;}
+.extra-tone-1{--extra-bg:#eee6f5;--extra-ink:#685078;}
+.extra-tone-2{--extra-bg:#fae8df;--extra-ink:#85513d;}
+.extra-tone-3{--extra-bg:#f4e3ec;--extra-ink:#7c4662;}
+.extra-tone-4{--extra-bg:#e5e9f5;--extra-ink:#4b557c;}
+.extra-tone-5{--extra-bg:#f2e8db;--extra-ink:#735b40;}
+.cell.external-activity{background:var(--extra-bg,var(--paper-2));border:0;box-shadow:none;outline:0;}
+.cell.external-activity:hover{background:var(--extra-bg,var(--paper-2));filter:brightness(.98);}
+.cell.external-activity:focus-visible{outline:2px solid var(--terra);outline-offset:-3px;}
+.cell.external-activity .subj,.cell.external-activity .extra-meta{color:var(--extra-ink,var(--ink-2));}
+.cell.external-activity .extra-meta,.extra-week-cell .extra-meta{display:flex;align-items:baseline;justify-content:space-between;gap:5px;white-space:nowrap;min-width:0;width:100%;overflow:visible;font-size:10.3px;}
+.extra-label{min-width:0;overflow:hidden;text-overflow:ellipsis;}
+.extra-room{flex:none;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.cell.external-activity.changed{background:var(--red-soft);}
+.cell.external-activity.changed .subj,.cell.external-activity.changed .extra-meta{color:var(--red);}
+.extra-week-cell{padding:5px 6px;background:var(--extra-bg,var(--paper-2));color:var(--extra-ink,var(--ink-2));}
+.extra-week-cell+.extra-week-cell{margin-top:4px;}
+.extra-slot.extra-individual,.extra-slot.extra-primary{background:var(--extra-bg);color:var(--extra-ink);border-color:transparent;}

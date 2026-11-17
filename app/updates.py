@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+from uuid import uuid4
 from urllib.parse import urlsplit
 
 import httpx
@@ -34,13 +35,15 @@ def version(value):
 
 def channel():
     value = json.loads(CHANNEL.read_text(encoding='utf-8'))
+    if not isinstance(value,dict):raise ValueError('Не удалось прочитать настройки обновлений.')
     repo = value.get('repository', '')
     if not repo:
         return None
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}', repo):
         raise ValueError('Некорректный источник обновлений.')
-    if len(base64.b64decode(value['publicKey'], validate=True)) != 32:
-        raise ValueError('Некорректный ключ обновлений.')
+    try:
+        if not isinstance(value.get('publicKey'),str) or len(base64.b64decode(value['publicKey'], validate=True)) != 32:raise ValueError()
+    except (ValueError,TypeError):raise ValueError('Некорректный ключ обновлений.') from None
     return value
 
 
@@ -182,15 +185,19 @@ def ps_quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def install_script(installer, folder, pid, expected_hash):
+def install_script(installer, folder, pid, expected_hash, ready=None):
     """Separate Windows process waits for all executable locks to be released."""
     # No network access or school paths are passed to this helper.
+    if '"' in str(folder):raise ValueError('Папка установки содержит недопустимый символ.')
+    acknowledge=f"[System.IO.File]::WriteAllText({ps_quote(ready)}, 'ready')" if ready else ''
     return f"""$ErrorActionPreference = 'Stop'
 $env:PSModulePath = $env:SystemRoot + '\\System32\\WindowsPowerShell\\v1.0\\Modules'
 $setup = {ps_quote(installer)}
 $folder = {ps_quote(folder)}
-Wait-Process -Id {int(pid)} -ErrorAction SilentlyContinue
 if ((Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant() -ne {ps_quote(expected_hash)}) {{ exit 2 }}
+{acknowledge}
+Wait-Process -Id {int(pid)} -Timeout 120 -ErrorAction SilentlyContinue
+if (Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue) {{ exit 3 }}
 $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS', '/UPDATE=1', ('/DIR="' + $folder + '"'))
 $start = New-Object System.Diagnostics.ProcessStartInfo
 $start.FileName = $setup
@@ -202,14 +209,11 @@ $start.CreateNoWindow = $true
 # must be a fresh application, not a worker reusing the old bootloader state.
 foreach ($name in @('_PYI_APPLICATION_HOME_DIR','_PYI_PARENT_PROCESS_LEVEL','_PYI_ARCHIVE_FILE','_MEIPASS2')) {{ $start.EnvironmentVariables.Remove($name) }}
 $start.EnvironmentVariables['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
-$process = [System.Diagnostics.Process]::Start($start)
-$process.WaitForExit()
-if ($process.ExitCode -eq 0) {{
-  $start.FileName = Join-Path $folder 'Расписание.exe'
-  $start.Arguments = ''
-  [System.Diagnostics.Process]::Start($start) | Out-Null
+try {{
+  $process = [System.Diagnostics.Process]::Start($start)
+  $process.WaitForExit()
 }}
-else {{
+finally {{
   $start.FileName = Join-Path $folder 'Расписание.exe'
   $start.Arguments = ''
   if ([System.IO.File]::Exists($start.FileName)) {{ [System.Diagnostics.Process]::Start($start) | Out-Null }}
@@ -221,14 +225,24 @@ def launch_installer(installer, folder, payload):
     installer = Path(installer).resolve()
     if checksum(installer) != payload['asset']['sha256']:
         raise ValueError('Файл обновления изменился. Обновление отменено.')
-    script = install_script(installer, folder, os.getpid(), payload['asset']['sha256'])
+    ready=installer.parent/('helper-ready-'+uuid4().hex)
+    script = install_script(installer, folder, os.getpid(), payload['asset']['sha256'],ready)
     # EncodedCommand avoids shell interpolation and PowerShell path quoting bugs.
     command = base64.b64encode(script.encode('utf-16le')).decode('ascii')
     system = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
-    subprocess.Popen([str(system), '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+    helper=subprocess.Popen([str(system), '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
                       '-EncodedCommand', command], cwd=str(folder),
                      creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
                      close_fds=True,env=clean_environment())
+    try:
+        deadline=time.monotonic()+10
+        while time.monotonic()<deadline:
+            if ready.is_file() and ready.read_text(encoding='utf-8-sig')=='ready':return
+            if helper.poll() is not None:break
+            time.sleep(.05)
+        if helper.poll() is None:helper.terminate()
+        raise ValueError('Не удалось запустить установку. Программа остаётся открытой; попробуйте обновление позже.')
+    finally:ready.unlink(missing_ok=True)
 
 
 def clean_environment():

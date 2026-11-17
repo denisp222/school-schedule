@@ -423,9 +423,10 @@ function notice(text, kind = '', iconName = 'info') {
 
 function rowList() {
   const kind = S.view;
+  const shown=S.preview?previewDay():S.day;
   let rows = [...(S.data[kind] || [])];
   const fieldForKind={teachers:'teacherIds',classes:'classIds',rooms:'roomIds'}[kind];
-  if(fieldForKind)rows=rows.filter(r=>!r.archived || lessonsFor(S.date).some(l=>l[fieldForKind].includes(r.id)));
+  if(fieldForKind)rows=rows.filter(r=>!r.archived || shown.lessons.some(l=>l[fieldForKind].includes(r.id)) || shown.externalActivities?.some(e=>kind==='teachers'?e.teacherId===r.id:kind==='rooms'&&e.roomId===r.id));
   const query = S.query.trim().toLowerCase();
   if (query) rows = rows.filter((row) => row.name.toLowerCase().includes(query));
   if (S.changesOnly) {

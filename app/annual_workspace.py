@@ -110,7 +110,7 @@ def context():
 
 
 def allowed_path(path):
-    return (path in ('/api/state','/api/bootstrap','/api/save','/api/fill-missing','/api/plan/check','/api/report','/api/report/load')
+    return (path in ('/api/state','/api/bootstrap','/api/save','/api/fill-missing','/api/plan/check','/api/report','/api/report/load','/api/annual/advice','/api/annual/advice/apply')
             or path=='/api/lesson' or path.startswith(('/api/lesson/','/api/entity/','/api/week/','/api/day/','/api/constraints/')))
 
 

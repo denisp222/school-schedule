@@ -5,6 +5,7 @@ from docx import Document
 from docx.shared import Cm, Pt
 from .commitments import matching
 from .rotation import number
+from .display_labels import individual_labels,room_label
 
 
 def export(state, monday, learner_id=''):
@@ -17,13 +18,19 @@ def export(state, monday, learner_id=''):
     classes={r['id']:r['name'] for r in state['classes']}
     teachers={r['id']:r['name'] for r in state['teachers']}
     subjects={r['id']:r['name'] for r in state['subjects']}
-    rooms={r['id']:r['name'] for r in state['rooms']}
+    rooms={r['id']:room_label(r['name']) for r in state['rooms']}
+    labels=individual_labels(state)
+    for learner in learners:
+        if learner.get('classId') not in classes:raise ValueError('У ученика не найден класс. Проверьте его карточку в дополнительных занятиях.')
+    for row in state.get('externalActivities',[]):
+        if row.get('learnerId') in {l['id'] for l in learners} and row.get('teacherId') not in teachers:
+            raise ValueError('У индивидуального занятия не найден преподаватель. Проверьте дополнительные занятия.')
     current=number(state,monday)
     weeks={w:monday+timedelta(weeks=(w-current)%4) for w in range(1,5)}
     for i,learner in enumerate(learners):
         if i:document.add_page_break()
         document.add_heading('Индивидуальное расписание',0)
-        document.add_paragraph(learner['name']+' · '+classes[learner['classId']])
+        document.add_paragraph(labels[learner['id']])
         table=document.add_table(rows=1,cols=6);table.style='Table Grid'
         for cell,text in zip(table.rows[0].cells,['День','Урок',*[f'{w}-я неделя' for w in range(1,5)]]):cell.text=text
         for d,title in enumerate(['Пн','Вт','Ср','Чт','Пт']):

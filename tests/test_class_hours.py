@@ -50,14 +50,13 @@ def test_leadership_comes_from_base_monday_and_can_be_overridden():
     assert class_hours.leader_map(state)['one']==''
 
 
-def test_installer_defaults_fill_only_missing_legacy_roles_with_matching_people(monkeypatch):
+def test_missing_leaders_never_come_from_a_different_project_seed(monkeypatch,tmp_path):
     state=school()
     state['baseLessons']=[l for l in state['baseLessons'] if l['subjectId']!='rov']
     for c in state['classes']:c.pop('homeroomTeacherId',None)
-    expected=class_hours._name(state['teachers'][0]['name'])
-    monkeypatch.setattr(class_hours,'_factory_leaders',lambda:{'6а':expected})
-    assert class_hours.leader_map(state)['one']=='a'
-    state['teachers'][0]['name']='Другой человек'
+    factory={**deepcopy(state),'classes':[{'id':'one','name':'6а','homeroomTeacherId':'a'}]}
+    (tmp_path/'factory-seed.json').write_text(json.dumps(factory),encoding='utf-8')
+    monkeypatch.setenv('SCHEDULE_DATA',str(tmp_path))
     assert class_hours.leader_map(state)['one']==''
     state['classes'][0]['homeroomTeacherId']='c'
     assert class_hours.leader_map(state)['one']=='c'
