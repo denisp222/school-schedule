@@ -341,14 +341,18 @@ const PAGE_TITLES = {
 function renderNav() {
   const node = $('#nav');
   if (!node || !S.data) return;
+  const {scrollTop, scrollLeft} = node;
   node.innerHTML = NAV.map((group) => `
     ${group.title ? `<div class="nav-label">${esc(group.title)}</div>` : ''}
     ${group.items.map(([id, label, iconName]) => `
-      <button type="button" class="nav-link ${S.page === id ? 'active' : ''}" data-action="nav" data-page="${id}" ${S.page === id ? 'aria-current="page"' : ''} title="${esc(label)}">
+      <button type="button" class="nav-link ${S.page === id ? 'active' : ''}" data-action="nav" data-page="${esc(id)}" ${S.page === id ? 'aria-current="page"' : ''} title="${esc(label)}">
         ${icon(iconName)}<span>${esc(label)}</span>
         ${id === 'journal' && S.data.journal?.length ? `<span class="count">${S.data.journal.filter((r) => r.active).length}</span>` : ''}
       </button>`).join('')}
   `).join('');
+  node.scrollTop = scrollTop;
+  node.scrollLeft = scrollLeft;
+  node.querySelector('[aria-current="page"]')?.scrollIntoView({block:'nearest', inline:'nearest'});
   $('#brand-sub').textContent = S.data.school.year;
 }
 
@@ -368,7 +372,7 @@ function pageHead(kicker, title, sub, actions = '') {
   return `
     <div class="page-head">
       <div>
-        <div class="kicker">${kicker}</div>
+        ${kicker ? `<div class="kicker">${kicker}</div>` : ''}
         <h1>${title}</h1>
         ${sub ? `<div class="sub">${sub}</div>` : ''}
       </div>
@@ -526,20 +530,24 @@ function lessonTile({subject = '', badge = '', detail = '', room = '', note = ''
   const tag = buttonAttrs ? 'button' : 'span';
   const attrs = buttonAttrs ? `type="button" ${buttonAttrs}` : '';
   const statusLabel = LESSON_STATUSES[status] || '';
+  const statusText = statusLabel ? `<span class="lesson-status">${statusLabel}</span>` : '';
+  const statusOnly = !subject && statusText;
   return `<${tag} class="lesson-tile ${buttonAttrs ? 'cell' : ''} ${tone} ${status ? 'lesson-'+status : ''}" ${attrs} title="${esc([title, statusLabel, note, locked?'Закреплено':''].filter(Boolean).join(' · '))}">
-    <span class="lesson-heading">
-      <span class="subj ${subject ? '' : 'lesson-empty'}">${esc(subject || '–')}</span>
-      ${locked ? `<span class="lesson-lock" aria-label="Закреплено">${icon('lock', 10)}</span>` : ''}
+    <span class="lesson-core">
+      <span class="lesson-heading">
+        ${statusOnly || `<span class="subj ${subject ? '' : 'lesson-empty'}">${esc(subject || '–')}</span>`}
+        ${locked ? `<span class="lesson-lock" aria-label="Закреплено">${icon('lock', 10)}</span>` : ''}
+      </span>
+      ${badge || detail || room ? `<span class="meta">
+        ${badge ? `<span class="class-chip">${esc(badge)}</span>` : ''}
+        ${detail ? `<span class="lesson-detail">${esc(detail)}</span>` : ''}
+        ${room ? `<span class="lesson-room">${esc(room)}</span>` : ''}
+      </span>` : ''}
     </span>
-    <span class="meta">
-      ${badge ? `<span class="class-chip">${esc(badge)}</span>` : ''}
-      ${detail ? `<span class="lesson-detail">${esc(detail)}</span>` : ''}
-      ${room ? `<span class="lesson-room">${esc(room)}</span>` : ''}
-    </span>
-    <span class="lesson-footer">
-      ${statusLabel ? `<span class="lesson-status">${statusLabel}</span>` : ''}
+    ${subject && (statusText || note) ? `<span class="lesson-footer">
+      ${statusText}
       ${note ? `<span class="lesson-note">${esc(note)}</span>` : ''}
-    </span>
+    </span>` : ''}
   </${tag}>`;
 }
 
@@ -554,16 +562,19 @@ function lessonDisplay(view, lesson) {
   };
 }
 
+function removedLessonStatus(lesson, actualLessons) {
+  return actualLessons.some(l => l.id === lesson.id || l.splitFrom === lesson.id
+    || l.joint?.sources.some(source => source.id === lesson.id)
+    || l.technologyJoint?.sourceRefs.some(source => source.lessonId === lesson.id)) ? 'moved' : 'cancelled';
+}
+
 function lessonCell(row, period, current, base) {
   const shown = S.preview ? previewDay() : S.day;
   const status = sameCell(current, base) ? '' : 'changed';
   const tiles = current.map(lesson => lessonCellAt(row, period, shown, lesson, status));
   if (!current.length) {
     for (const old of base) {
-      const moved = shown.lessons.some(actual => actual.id === old.id || actual.splitFrom === old.id
-        || actual.joint?.sources.some(source => source.id === old.id)
-        || actual.technologyJoint?.sourceRefs.some(source => source.lessonId === old.id));
-      tiles.push(lessonCellAt(row, period, shown, null, moved ? 'moved' : 'cancelled', old));
+      tiles.push(lessonCellAt(row, period, shown, null, removedLessonStatus(old, shown.lessons), old));
     }
   }
   tiles.push(...externalCells(row, period, shown));
@@ -659,7 +670,7 @@ function renderDay() {
         <div class="toolbar-left">
           <div class="segmented" role="group" aria-label="Вид расписания">
             ${[['teachers', 'Учителя'], ['classes', 'Классы'], ['rooms', 'Кабинеты']].map(([value, label]) => `
-              <button type="button" data-action="view" data-value="${value}" class="${S.view === value ? 'active' : ''}" aria-pressed="${S.view === value}">${label}</button>`).join('')}
+              <button type="button" data-action="view" data-value="${esc(value)}" class="${S.view === value ? 'active' : ''}" aria-pressed="${S.view === value}">${label}</button>`).join('')}
           </div>
           <label class="search">${icon('search')}<input id="search" type="search" placeholder="Найти ${S.view === 'teachers' ? 'учителя' : S.view === 'classes' ? 'класс' : 'кабинет'}" value="${esc(S.query)}" autocomplete="off"></label>
           <label class="check"><input type="checkbox" id="changes-only" ${S.changesOnly ? 'checked' : ''}>Только изменения</label>
@@ -684,7 +695,7 @@ function renderDay() {
 function renderDayLoadLocator() {
   const kind=S.view==='classes'?'classes':'teachers';
   const id=S.loadId && by(kind,S.loadId) ? S.loadId : (S.data[kind][0]?.id || '');
-  return `<div class="load-picker"><label>Часы базовой недели <select class="input" id="load-entity">${S.data[kind].map(r=>`<option value="${r.id}" ${r.id===id?'selected':''}>${esc(r.name)}</option>`).join('')}</select></label></div>${renderLoadLocator(kind,id)}`;
+  return `<div class="load-picker"><label>Часы базовой недели <select class="input" id="load-entity">${S.data[kind].map(r=>`<option value="${esc(r.id)}" ${r.id===id?'selected':''}>${esc(r.name)}</option>`).join('')}</select></label></div>${renderLoadLocator(kind,id)}`;
 }
 
 /* --------------------------------------------------------------------------
@@ -919,7 +930,7 @@ function renderRepairPreview() {
   const cards = variants.length > 1 ? `
     <div class="variant-strip">
       ${variants.map((item, index) => `
-        <button type="button" class="variant-card ${item.id === selected.id ? 'active' : ''}" data-action="select-variant" data-id="${item.id}">
+        <button type="button" class="variant-card ${item.id === selected.id ? 'active' : ''}" data-action="select-variant" data-id="${esc(item.id)}">
           <span class="v-name">${item.id === result.recommended ? 'Основной вариант' : `Другой вариант ${index + 1}`}</span>
           <span class="v-title">${esc(item.title)}</span>
           <span class="v-stats">${item.stats?.moved || 0} переставлено · ${item.stats?.cancelled || 0} отменено${item.stats?.groupLosses ? ' · занятий подгрупп отменено: '+item.stats.groupLosses : ''}${item.stats?.groupSplits ? ` · ${item.stats.groupSplits} группа` : ''}</span>
@@ -937,7 +948,7 @@ function renderRepairPreview() {
     ${rows.length ? `<div class="change-list" style="margin-top:14px">${rows.map(changeRow).join('')}</div>` : notice('Изменений нет.', 'success')}
     ${selected.status !== 'ok' ? notice('Полный вариант не найден. Исходное расписание не изменено.', 'error') : ''}`;
   const apply = selected.status === 'ok'
-    ? button('Применить', 'apply-repair', 'primary', 'check', `data-other="${S.repairContext?.otherDays ? 1 : 0}" data-reason="${esc(S.repairContext?.reason || '')}" data-variant="${selected.id}"`)
+    ? button('Применить', 'apply-repair', 'primary', 'check', `data-other="${S.repairContext?.otherDays ? 1 : 0}" data-reason="${esc(S.repairContext?.reason || '')}" data-variant="${esc(selected.id)}"`)
     : '';
   const selectedIndex = variants.findIndex((item) => item.id === selected.id) + 1;
   openModal({
@@ -1067,18 +1078,18 @@ function teacherChecks(subjectId, selected = []) {
     note = `<div class="notice warn" style="margin-top:6px">${icon('alert')}<div class="grow">В карточках учителей этот предмет не отмечен. Показаны все учителя — проверьте, пожалуйста.</div></div>`;
   }
   return `<div class="check-grid">${teachers.map((teacher) => `
-    <label class="check"><input type="checkbox" name="teacherIds" value="${teacher.id}" ${selected.includes(teacher.id) ? 'checked' : ''}>${esc(teacher.name)}</label>`).join('')}</div>${note}`;
+    <label class="check"><input type="checkbox" name="teacherIds" value="${esc(teacher.id)}" ${selected.includes(teacher.id) ? 'checked' : ''}>${esc(teacher.name)}</label>`).join('')}</div>${note}`;
 }
 
 function roomChecks(selected = []) {
   return `<div class="check-grid">${S.data.rooms.map((room) => `
-    <label class="check"><input type="checkbox" name="roomIds" value="${room.id}" ${selected.includes(room.id) ? 'checked' : ''}>${esc(room.name)}</label>`).join('')}</div>`;
+    <label class="check"><input type="checkbox" name="roomIds" value="${esc(room.id)}" ${selected.includes(room.id) ? 'checked' : ''}>${esc(room.name)}</label>`).join('')}</div>`;
 }
 
 function accessChecks(kind, selected = []) {
   const items = S.data[kind] || [];
   return `<div class="check-grid">${items.map((item) => `
-    <label class="check"><input type="checkbox" name="${kind === 'subjects' ? 'subjectIds' : 'classIds'}" value="${item.id}" ${selected.includes(item.id) ? 'checked' : ''}>${esc(item.name)}</label>`).join('')}</div>`;
+    <label class="check"><input type="checkbox" name="${kind === 'subjects' ? 'subjectIds' : 'classIds'}" value="${esc(item.id)}" ${selected.includes(item.id) ? 'checked' : ''}>${esc(item.name)}</label>`).join('')}</div>`;
 }
 
 function openLessonSheet(dataset) {
@@ -1112,10 +1123,10 @@ function openLessonSheet(dataset) {
     <div class="form-grid">
       <div class="form-grid two">
         <label class="field"><span>Класс</span><select class="input" name="classId" required>
-          ${S.data.classes.map((item) => `<option value="${item.id}" ${item.id === lesson.classIds?.[0] ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}
+          ${S.data.classes.map((item) => `<option value="${esc(item.id)}" ${item.id === lesson.classIds?.[0] ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}
         </select></label>
         <label class="field"><span>Предмет</span><select class="input" name="subjectId" required>
-          ${S.data.subjects.map((item) => `<option value="${item.id}" ${item.id === lesson.subjectId ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}
+          ${S.data.subjects.map((item) => `<option value="${esc(item.id)}" ${item.id === lesson.subjectId ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}
         </select></label>
       </div>
       <div>
@@ -1130,7 +1141,7 @@ function openLessonSheet(dataset) {
         </select></label>
         <label class="field"><span>Обменять с уроком этого класса</span><select class="input" name="swapId">
           <option value="">Без обмена</option>
-          ${swaps.map((item) => `<option value="${item.id}">${item.period} урок · ${esc(subjectShort(item.subjectId))}</option>`).join('')}
+          ${swaps.map((item) => `<option value="${esc(item.id)}">${item.period} урок · ${esc(subjectShort(item.subjectId))}</option>`).join('')}
         </select></label>
       </div>
       <div>
@@ -1269,7 +1280,7 @@ function openAbsenceSheet(id = '') {
     <div class="form-grid">
       <label class="field"><span>Преподаватель</span><select class="input" name="teacherId" required>
         <option value="">Выберите…</option>
-        ${S.data.teachers.map((teacher) => `<option value="${teacher.id}" ${teacher.id === record.teacherId ? 'selected' : ''}>${esc(teacher.name)}</option>`).join('')}
+        ${S.data.teachers.map((teacher) => `<option value="${esc(teacher.id)}" ${teacher.id === record.teacherId ? 'selected' : ''}>${esc(teacher.name)}</option>`).join('')}
       </select></label>
       <div class="form-grid two">
         <label class="field"><span>С даты</span><input class="input" type="date" name="start" value="${record.start}" required></label>
@@ -1282,7 +1293,7 @@ function openAbsenceSheet(id = '') {
       <label class="field"><span>Причина</span><input class="input" name="reason" value="${esc(record.reason)}"></label>
       <div class="notice info">${icon('info')}<div class="grow">Отсутствие само не меняет расписание. После сохранения нажмите «Сохранить и подобрать» — программа переставит уроки и покажет вариант.</div></div>
     </div>`;
-  const foot = `${existing ? `<button type="button" class="btn danger" data-action="delete-absence" data-id="${existing.id}">Удалить</button>` : ''}
+  const foot = `${existing ? `<button type="button" class="btn danger" data-action="delete-absence" data-id="${esc(existing.id)}">Удалить</button>` : ''}
     ${button('Только сохранить', 'save-absence', 'ghost')}<button type="button" class="btn primary" data-action="save-absence" data-repair="1">${icon('spark')}Сохранить и подобрать</button>`;
   openSheet({
     title: existing ? 'Изменить отсутствие' : 'Учитель отсутствует',
@@ -1399,16 +1410,16 @@ function openEntitySheet(kind, id = '') {
           ${accessChecks('subjects', record.subjectIds || [])}
         </div>
         <div class="form-grid two">
-          <label class="field"><span>Закреплённый класс</span><select class="input" name="classId"><option value="">Нет</option>${S.data.classes.map((item) => `<option value="${item.id}" ${item.id === record.classId ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></label>
-          <label class="field"><span>Закреплённый учитель</span><select class="input" name="teacherId"><option value="">Нет</option>${S.data.teachers.map((item) => `<option value="${item.id}" ${item.id === record.teacherId ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></label>
+          <label class="field"><span>Закреплённый класс</span><select class="input" name="classId"><option value="">Нет</option>${S.data.classes.map((item) => `<option value="${esc(item.id)}" ${item.id === record.classId ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></label>
+          <label class="field"><span>Закреплённый учитель</span><select class="input" name="teacherId"><option value="">Нет</option>${S.data.teachers.map((item) => `<option value="${esc(item.id)}" ${item.id === record.teacherId ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></label>
         </div>
       </div>`;
   } else if (kind === 'plan') {
     body = `
       <div class="form-grid">
         <div class="form-grid two">
-          <label class="field"><span>Класс</span><select class="input" name="classId">${S.data.classes.map((item) => `<option value="${item.id}" ${item.id === record.classIds?.[0] ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></label>
-          <label class="field"><span>Предмет</span><select class="input" name="subjectId">${S.data.subjects.map((item) => `<option value="${item.id}" ${item.id === record.subjectId ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></label>
+          <label class="field"><span>Класс</span><select class="input" name="classId">${S.data.classes.map((item) => `<option value="${esc(item.id)}" ${item.id === record.classIds?.[0] ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></label>
+          <label class="field"><span>Предмет</span><select class="input" name="subjectId">${S.data.subjects.map((item) => `<option value="${esc(item.id)}" ${item.id === record.subjectId ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></label>
         </div>
         <div>
           <span class="field-label">Учитель</span>
@@ -1433,7 +1444,7 @@ function openEntitySheet(kind, id = '') {
     body += `<label class="check" ${mandatoryPair?'title="Два урока труда всегда проводятся подряд"':''}><input type="checkbox" name="doubleLessons" ${record.doubleLessons || mandatoryPair ? 'checked' : ''} ${mandatoryPair?'disabled':''}>Проводить спаренными уроками</label>`;
   }
   if (kind === 'teachers') body += `<label class="field"><span>Не более рабочих дней в неделю</span><input class="input" name="maxDays" type="number" min="1" max="5" value="${record.maxDays||5}"></label>`;
-  const foot = `${existing ? `<button type="button" class="btn danger" data-action="delete-entity" data-kind="${kind}" data-id="${existing.id}">Удалить</button>` : ''}<span class="left"></span>${button('Отмена', 'close-sheet', 'ghost')}<button type="submit" class="btn primary">${icon('check')}Сохранить</button>`;
+  const foot = `${existing ? `<button type="button" class="btn danger" data-action="delete-entity" data-kind="${kind}" data-id="${esc(existing.id)}">Удалить</button>` : ''}<span class="left"></span>${button('Отмена', 'close-sheet', 'ghost')}<button type="submit" class="btn primary">${icon('check')}Сохранить</button>`;
   openSheet({
     title: existing ? `Изменить ${KIND_TITLES[kind]}` : `Добавить ${KIND_TITLES[kind]}`,
     sub: kind === 'plan' ? 'Плановая нагрузка на неделю' : 'Справочник школы',
@@ -1451,7 +1462,7 @@ function openEntitySheet(kind, id = '') {
 function planTeacherChecks(subjectId, selected = []) {
   const teachers = S.data.teachers.filter((teacher) => (teacher.subjectIds || []).includes(subjectId));
   const list = teachers.length ? teachers : S.data.teachers;
-  return `<div class="check-grid">${list.map((teacher) => `<label class="check"><input type="checkbox" name="teacherIds" value="${teacher.id}" ${selected.includes(teacher.id) ? 'checked' : ''}>${esc(teacher.name)}</label>`).join('')}</div>`;
+  return `<div class="check-grid">${list.map((teacher) => `<label class="check"><input type="checkbox" name="teacherIds" value="${esc(teacher.id)}" ${selected.includes(teacher.id) ? 'checked' : ''}>${esc(teacher.name)}</label>`).join('')}</div>`;
 }
 
 async function submitEntity(form, kind, existing) {
@@ -1509,10 +1520,14 @@ function weekEntityId() {
   return S.weekId;
 }
 
-function weekTiles(view, lessons, extra, gap = false) {
-  const ordinary = lessons.map(lesson => lessonTile(lessonDisplay(view, lesson))).join('');
-  const additional = extra.map(activity => lessonTile(externalDisplay(activity, view))).join('');
-  return ordinary + additional || lessonTile(gap ? {status: 'gap'} : {});
+function weekTiles(view, lessons, extra, {gap = false, removed = [], actual = []} = {}) {
+  const tiles = lessons.map(lesson => lessonTile(lessonDisplay(view, lesson)));
+  for (const lesson of removed) {
+    tiles.push(lessonTile({...lessonDisplay(view, lesson), locked: false, status: removedLessonStatus(lesson, actual),
+      note: gap ? 'Окно' : ''}));
+  }
+  tiles.push(...extra.map(activity => lessonTile(externalDisplay(activity, view))));
+  return tiles.join('') || lessonTile(gap ? {status:'gap'} : {});
 }
 
 function renderWeek() {
@@ -1525,6 +1540,7 @@ function renderWeek() {
   const source = S.weekActual
     ? Object.fromEntries(days.map((date) => [date, lessonsFor(date)]))
     : Object.fromEntries(days.map((date) => [date, datedBaseWeek(date).filter(l => Number(l.day) === dayIndex(date))]));
+  const original = S.weekActual ? Object.fromEntries(days.map(date => [date, baseFor(date)])) : {};
   const rows = S.data.school.bells.map((bell, index) => {
     const period = index + 1;
     const cells = days.map((date) => {
@@ -1534,11 +1550,12 @@ function renderWeek() {
       const first = Math.min(...allPeriods);
       const last = Math.max(...allPeriods);
       const gap = !lessons.length && !extra.length && allPeriods.length && period > first && period < last;
+      const removed = lessons.length ? [] : cellAt(original[date] || [], field, id, period);
       const summary = lessons.map(describe).concat(extra.map(activity => {
         const {title, status} = externalDisplay(activity, kind);
         return status ? title + ' · ' + LESSON_STATUSES[status] : title;
-      })).join(' · ');
-      return `<td><button type="button" class="week-edit" draggable="${lessons.length && (S.workspace==='draft'||S.weekActual)?'true':'false'}" ${(S.workspace==='draft'||S.weekActual)?'data-week-edit="1"':''} data-lesson="${lessons[0]?.id || ''}" data-date="${date}" data-scope="${S.weekActual ? 'day' : 'base'}" data-row-kind="${kind}" data-row="${id}" data-period="${period}" aria-label="${esc(DAYS[dayIndex(date)] + ', урок ' + period + ': ' + (summary || (gap ? 'окно' : 'нет занятия')))}">${weekTiles(kind, lessons, extra, gap)}</button></td>`;
+      }), removed.map(lesson => describe(lesson) + ' · ' + LESSON_STATUSES[removedLessonStatus(lesson, source[date])])).join(' · ');
+      return `<td><button type="button" class="week-edit" draggable="${lessons.length && (S.workspace==='draft'||S.weekActual)?'true':'false'}" ${(S.workspace==='draft'||S.weekActual)?'data-week-edit="1"':''} data-lesson="${esc(lessons[0]?.id || '')}" data-date="${date}" data-scope="${S.weekActual ? 'day' : 'base'}" data-row-kind="${kind}" data-row="${esc(id)}" data-period="${period}" aria-label="${esc(DAYS[dayIndex(date)] + ', урок ' + period + ': ' + (summary || (gap ? 'окно' : 'нет занятия')))}">${weekTiles(kind, lessons, extra, {gap, removed, actual:source[date]})}</button></td>`;
     }).join('');
     return `<tr><th><span class="pnum">${period}</span><small>${esc(bell)}</small></th>${cells}</tr>`;
   }).join('');
@@ -1556,7 +1573,7 @@ function renderWeek() {
           <button type="button" data-action="week-kind" data-value="classes" class="${kind === 'classes' ? 'active' : ''}">Классы</button>
           <button type="button" data-action="week-kind" data-value="teachers" class="${kind === 'teachers' ? 'active' : ''}">Учителя</button>
         </div>
-        <select class="input" id="week-entity" style="max-width:320px">${S.data[kind].map((item) => `<option value="${item.id}" ${item.id === id ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select>
+        <select class="input" id="week-entity" style="max-width:320px">${S.data[kind].map((item) => `<option value="${esc(item.id)}" ${item.id === id ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select>
         <span class="muted">${S.workspace==='draft'||S.weekActual?'Двойной щелчок по клетке: изменить или добавить урок':'Изменения базовой недели готовятся отдельным черновиком.'}</span>
       </div>
       <div class="table-card">
@@ -1624,7 +1641,7 @@ function renderPlan() {
       <td class="num">${hours} ч</td>
       <td class="num ${delta ? 'danger' : 'positive'}">${count} ч</td>
       <td style="min-width:120px"><div class="progress ${delta ? 'warn' : ''}"><i style="width:${percent}%"></i></div></td>
-      <td><button type="button" class="text-btn" data-action="edit-entity" data-kind="plan" data-id="${row.id}">Изменить</button></td>
+      <td><button type="button" class="text-btn" data-action="edit-entity" data-kind="plan" data-id="${esc(row.id)}">Изменить</button></td>
     </tr>`;
   }).join('');
   const actions = `${button('Составить всю неделю', 'build-week', 'ghost', 'spark')}${button('Достроить недостающие часы', 'fill-missing', 'ghost', 'plus')}${button('Проверить план', 'plan-check', 'ghost', 'alert')}${button('Добавить', 'new-entity', 'primary', 'plus', 'data-kind="plan"')}`;
@@ -1638,7 +1655,7 @@ function renderPlan() {
         <div class="stat-card"><div class="k">Учителей</div><div class="v">${S.data.teachers.length}</div><div class="h">в справочнике</div></div>
       </div>
       <div class="filter-bar">
-        <select class="input" id="plan-class" style="max-width:220px"><option value="">Все классы</option>${S.data.classes.map((item) => `<option value="${item.id}" ${S.planClass === item.id ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select>
+        <select class="input" id="plan-class" style="max-width:220px"><option value="">Все классы</option>${S.data.classes.map((item) => `<option value="${esc(item.id)}" ${S.planClass === item.id ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select>
         <label class="search">${icon('search')}<input id="plan-search" type="search" placeholder="Найти предмет или учителя" value="${esc(S.planQuery)}"></label>
         <span class="spacer"></span>
         <span class="muted">${rows.length} строк</span>
@@ -1732,32 +1749,32 @@ function renderDirectory() {
       <td><div class="subject-tags">${(row.subjectIds || []).slice(0, 5).map((id) => `<span>${esc(subjectShort(id))}</span>`).join('')}${(row.subjectIds || []).length > 5 ? `<span>+${row.subjectIds.length - 5}</span>` : ''}</div></td>
       <td class="num">${row.weeklyTarget ?? '—'}</td>
       <td class="num">${row.maxDaily ?? 8}</td>
-      <td><button type="button" class="text-btn" data-action="edit-entity" data-kind="teachers" data-id="${row.id}">Изменить</button></td>
+      <td><button type="button" class="text-btn" data-action="edit-entity" data-kind="teachers" data-id="${esc(row.id)}">Изменить</button></td>
     </tr>`).join('');
   } else if (kind === 'classes') {
     head = '<tr><th>Класс</th><th class="num">Учеников</th><th class="num">Уроков в день</th><th class="num">С какого урока</th><th></th></tr>';
     body = rows.map((row) => `<tr>
       <td class="title">${esc(row.name)}</td><td class="num">${row.size || '—'}</td><td class="num">${row.maxDaily}</td><td class="num">${row.firstPeriod}</td>
-      <td><button type="button" class="text-btn" data-action="edit-entity" data-kind="classes" data-id="${row.id}">Изменить</button></td>
+      <td><button type="button" class="text-btn" data-action="edit-entity" data-kind="classes" data-id="${esc(row.id)}">Изменить</button></td>
     </tr>`).join('');
   } else if (kind === 'subjects') {
     head = '<tr><th>Предмет</th><th>В Word</th><th>Код</th><th class="num">Трудность</th><th></th></tr>';
     body = rows.map((row) => `<tr>
       <td class="title">${esc(row.name)}</td><td>${esc(row.short)}</td><td>${esc(row.teacherCode || '—')}</td><td class="num">${row.difficulty}</td>
-      <td><button type="button" class="text-btn" data-action="edit-entity" data-kind="subjects" data-id="${row.id}">Изменить</button></td>
+      <td><button type="button" class="text-btn" data-action="edit-entity" data-kind="subjects" data-id="${esc(row.id)}">Изменить</button></td>
     </tr>`).join('');
   } else {
     head = '<tr><th>Кабинет</th><th class="num">Мест</th><th>Предметы</th><th></th></tr>';
     body = rows.map((row) => `<tr>
       <td class="title">${esc(row.name)}</td><td class="num">${row.capacity || '—'}</td>
       <td>${(row.subjectIds || []).length ? (row.subjectIds || []).map((id) => esc(subjectShort(id))).join(', ') : '<span class="muted">любой предмет</span>'}</td>
-      <td><button type="button" class="text-btn" data-action="edit-entity" data-kind="rooms" data-id="${row.id}">Изменить</button></td>
+      <td><button type="button" class="text-btn" data-action="edit-entity" data-kind="rooms" data-id="${esc(row.id)}">Изменить</button></td>
     </tr>`).join('');
   }
   return `
     <div class="page">
       ${pageHead('Справочники', 'Школа', 'Учителя, классы, предметы и кабинеты. Эти данные используются в расписании и отчётах.', button('Добавить', 'new-entity', 'primary', 'plus', `data-kind="${kind}"`))}
-      <div class="tabs">${Object.entries(DIR_TITLES).map(([value, label]) => `<button type="button" data-action="dir-kind" data-value="${value}" class="${kind === value ? 'active' : ''}">${label} <span class="muted">${S.data[value].length}</span></button>`).join('')}</div>
+      <div class="tabs">${Object.entries(DIR_TITLES).map(([value, label]) => `<button type="button" data-action="dir-kind" data-value="${esc(value)}" class="${kind === value ? 'active' : ''}">${label} <span class="muted">${S.data[value].length}</span></button>`).join('')}</div>
       <div class="filter-bar">
         <label class="search">${icon('search')}<input id="dir-search" type="search" placeholder="Найти в справочнике" value="${esc(S.dirQuery)}"></label>
         <span class="spacer"></span>
@@ -1778,7 +1795,7 @@ function renderAbsences() {
     <div class="absence-card">
       <div class="who">${esc(nameOf('teachers', row.teacherId))}</div>
       <div class="why">${row.first === row.last ? `${row.first} урок` : `${row.first}–${row.last} уроки`}${row.reason ? ` · ${esc(row.reason)}` : ''}</div>
-      <button type="button" class="text-btn" data-action="edit-absence" data-id="${row.id}">Изменить</button>
+      <button type="button" class="text-btn" data-action="edit-absence" data-id="${esc(row.id)}">Изменить</button>
     </div>`).join('')}</div></section>`).join('');
   return `
     <div class="page">
@@ -1809,7 +1826,7 @@ function renderJournal() {
       <td>${esc(row.before ? fullLesson(row.before) : '—')}${row.before ? `<small>${row.before.period} урок</small>` : ''}</td>
       <td>${esc(row.after ? fullLesson(row.after) : '—')}${row.after ? `<small>${row.after.period} урок</small>` : ''}${moved ? `<small>${esc(moved)}</small>` : ''}</td>
       <td>${esc(row.reason || '')}<small>${!row.after ? 'Отмена занятия' : row.confirmed ? 'Проведение отмечено' : 'Проведение пока не отмечено'}</small></td>
-      <td>${row.active === false ? '<span class="muted">пересмотрено</span>' : !row.after ? '<span class="muted">Урок отменён</span>' : row.confirmed ? '<span class="muted">Урок проведён</span>' : `<button type="button" class="btn small" data-action="journal-confirm" data-id="${row.id}">Отметить проведение урока</button>`}</td>
+      <td>${row.active === false ? '<span class="muted">пересмотрено</span>' : !row.after ? '<span class="muted">Урок отменён</span>' : row.confirmed ? '<span class="muted">Урок проведён</span>' : `<button type="button" class="btn small" data-action="journal-confirm" data-id="${esc(row.id)}">Отметить проведение урока</button>`}</td>
     </tr>`;
   }).join('');
   return `
@@ -1985,7 +2002,7 @@ function renderHistory() {
   const rows = S.history.map((row, index) => `<tr>
     <td>${new Date(row.created).toLocaleString('ru-RU')}</td>
     <td>${esc(row.label)}</td>
-    <td>${index === 0 ? '<span class="pill green">текущая</span>' : `<button type="button" class="text-btn" data-action="restore-history" data-id="${row.id}">Восстановить</button>`}</td>
+    <td>${index === 0 ? '<span class="pill green">текущая</span>' : `<button type="button" class="text-btn" data-action="restore-history" data-id="${esc(row.id)}">Восстановить</button>`}</td>
   </tr>`).join('');
   return `
     <div class="page">
