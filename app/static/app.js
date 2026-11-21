@@ -510,75 +510,84 @@ function lessonGroupLabel(lesson,row) {
   if(S.view!=='classes')return '';
   const groups=lessonGroups(lesson,row.id);
   if(groups.length===2)return '';
-  return `<small class="group-label">${groups.map(g=>esc(subgroupName(row.id,g))).join(', ')}</small>`;
+  return groups.map(g=>subgroupName(row.id,g)).join(', ');
 }
 
-function cellContent(view, lesson, room) {
-  if (view === 'teachers') {
-    return `<span class="subj">${esc(gridShort(lesson.subjectId))}</span>
-      <span class="meta"><span class="class-chip">${esc(namesOf('classes', lesson.classIds))}</span>${room ? `каб. ${esc(room)}` : 'кабинет не указан'}</span>`;
-  }
-  if (view === 'classes') {
-    return `<span class="subj">${esc(gridShort(lesson.subjectId))}</span>
-      <span class="meta">${esc(teacherSurnames(lesson.teacherIds))}${room ? ` · ${esc(room)}` : ''}</span>`;
-  }
-  return `<span class="subj"><span class="class-chip">${esc(namesOf('classes', lesson.classIds))}</span>${esc(gridShort(lesson.subjectId))}</span>
-    <span class="meta">${esc(teacherSurnames(lesson.teacherIds))}</span>`;
+const LESSON_STATUSES = {
+  changed: 'Изменено',
+  cancelled: 'Отменено',
+  moved: 'Перенесено',
+  absent: 'Отсутствует',
+  gap: 'Окно',
+};
+
+function lessonTile({subject = '', badge = '', detail = '', room = '', note = '',
+                     status = '', tone = '', title = '', locked = false} = {}, buttonAttrs = '') {
+  const tag = buttonAttrs ? 'button' : 'span';
+  const attrs = buttonAttrs ? `type="button" ${buttonAttrs}` : '';
+  const statusLabel = LESSON_STATUSES[status] || '';
+  return `<${tag} class="lesson-tile ${buttonAttrs ? 'cell' : ''} ${tone} ${status ? 'lesson-'+status : ''}" ${attrs} title="${esc([title, statusLabel, note, locked?'Закреплено':''].filter(Boolean).join(' · '))}">
+    <span class="lesson-heading">
+      <span class="subj ${subject ? '' : 'lesson-empty'}">${esc(subject || '–')}</span>
+      ${locked ? `<span class="lesson-lock" aria-label="Закреплено">${icon('lock', 10)}</span>` : ''}
+    </span>
+    <span class="meta">
+      ${badge ? `<span class="class-chip">${esc(badge)}</span>` : ''}
+      ${detail ? `<span class="lesson-detail">${esc(detail)}</span>` : ''}
+      ${room ? `<span class="lesson-room">${esc(room)}</span>` : ''}
+    </span>
+    <span class="lesson-footer">
+      ${statusLabel ? `<span class="lesson-status">${statusLabel}</span>` : ''}
+      ${note ? `<span class="lesson-note">${esc(note)}</span>` : ''}
+    </span>
+  </${tag}>`;
+}
+
+function lessonDisplay(view, lesson) {
+  return {
+    subject: gridShort(lesson.subjectId),
+    badge: view === 'classes' ? '' : namesOf('classes', lesson.classIds),
+    detail: view === 'teachers' ? '' : teacherSurnames(lesson.teacherIds),
+    room: view === 'rooms' ? '' : (lesson.roomIds || []).map(compactRoom).join('/'),
+    title: fullLesson(lesson),
+    locked: lesson.locked,
+  };
 }
 
 function lessonCell(row, period, current, base) {
-  const red=!sameCell(current,base);
-  const extra=externalCell(row,period,S.preview?previewDay():S.day);
-  if(extra && current.length)return `<div class="cell-stack">${current.map(lesson=>lessonCellSingle(row,period,[lesson],base,red)).join('')}${extra}</div>`;
-  if(extra)return extra;
-  if(current.length>1) {
-    return `<div class="cell-stack" aria-label="${esc(row.name)}, ${period}-й урок: занятия подгрупп">${current.map(lesson=>lessonCellSingle(row,period,[lesson],base,red)).join('')}</div>`;
-  }
-  return lessonCellSingle(row,period,current,base,red);
-}
-
-function lessonCellSingle(row, period, current, base, red) {
-  const lesson = current[0];
-  const shown=S.preview?previewDay():S.day;
-  if(!lesson && ['teachers','rooms'].includes(S.view)) {
-    const busy=(shown.externalActivities || []).filter(activity=>activity.first<=period && period<=activity.last &&
-      (S.view==='teachers'?activity.teacherId===row.id:activity.roomId===row.id));
-    if(busy.length) {
-      const title=busy.map(activity=>`${activity.kind==='primary'?'Начальные классы':'Индивидуальные занятия'}: ${activity.label}`).join('; ');
-      return `<button type="button" class="cell external-activity" data-action="nav" data-page="extras" data-row-kind="${S.view}" data-row="${row.id}" data-period="${period}" data-date="${S.date}" title="${esc(title)}" aria-label="${esc(row.name)}, ${period}-й урок: ${esc(title)}. Открыть дополнительные занятия">${busy.map(activity=>`<span class="subj">${activity.kind==='primary'?'Начальные классы':'Индивидуальные занятия'}</span><span class="meta">${esc(activity.label)}${S.view==='teachers' && activity.roomId?' · каб. '+esc(nameOf('rooms',activity.roomId)):S.view==='rooms'?' · '+esc(nameOf('teachers',activity.teacherId)):''}</span>`).join('')}<span class="lock" aria-hidden="true">${icon('lock',10)}</span></button>`;
+  const shown = S.preview ? previewDay() : S.day;
+  const status = sameCell(current, base) ? '' : 'changed';
+  const tiles = current.map(lesson => lessonCellAt(row, period, shown, lesson, status));
+  if (!current.length) {
+    for (const old of base) {
+      const moved = shown.lessons.some(actual => actual.id === old.id || actual.splitFrom === old.id
+        || actual.joint?.sources.some(source => source.id === old.id)
+        || actual.technologyJoint?.sourceRefs.some(source => source.lessonId === old.id));
+      tiles.push(lessonCellAt(row, period, shown, null, moved ? 'moved' : 'cancelled', old));
     }
   }
-  const absent=(shown.absences || []).filter(a=>period>=a.first && period<=a.last && (lesson ? lesson.teacherIds.includes(a.teacherId) : S.view==='teachers' && row.id===a.teacherId));
-  const relocated=!lesson && base.some(old=>shown.lessons.some(actual=>actual.id===old.id || actual.splitFrom===old.id || actual.joint?.sources.some(source=>source.id===old.id) || actual.technologyJoint?.sourceRefs.some(source=>source.lessonId===old.id)));
-  const room = lesson ? namesOf('rooms', lesson.roomIds) : '';
-  const partners=lesson?.classIds.filter(c=>c!==row.id) || [];
-  const jointLabel=(lesson?.joint || lesson?.technologyJoint) && S.view==='classes' && partners.length?`<small class="joint-label">С ${esc(namesOf('classes',partners))}</small>`:'';
-  const title = lesson
-    ? `${namesOf('classes', lesson.classIds)} · ${subjectName(lesson.subjectId)} · ${namesOf('teachers', lesson.teacherIds)}${room ? ` · каб. ${room}` : ''}`
-    : red ? (relocated?'Занятие перенесено':'Занятие отменено') : 'Нет занятия';
-  const attrs=`${S.preview?'data-preview-cell="true"':'data-action="lesson"'} draggable="${lesson && !S.preview?'true':'false'}" data-row-kind="${S.view}" data-row="${row.id}" data-period="${period}" data-date="${S.date}" data-lesson="${lesson?.id || ''}" title="${esc(title)}"`;
-  const pupilGap=!lesson && S.view==='classes' && (shown.classGapDetails || []).some(item=>item.classId===row.id && item.periods.includes(period));
-  if(pupilGap)return `<button type="button" class="cell pupil-gap" ${attrs} aria-label="${esc(row.name)}, ${period} урок: окно"><span class="subj">Окно</span><span class="meta">Проверьте вариант</span></button>`;
-  if (absent.length && !red) {
-    return `<button type="button" class="cell absent-cell" ${attrs} aria-label="${esc(row.name)}, ${period} урок: учитель отсутствует"><span class="flag">отсутствие</span>${lesson?cellContent(S.view,lesson,room)+lessonGroupLabel(lesson,row):''}<span class="absence-label">${lesson?'Урок требует перестановки':'Учитель отсутствует'}</span></button>`;
-  }
-  if (!lesson && !red) {
-    return `<button type="button" class="cell empty" ${attrs} aria-label="${esc(`${row.name}, ${period} урок: нет занятия`)}"></button>`;
-  }
-  if (!lesson && red) {
-    return `<button type="button" class="cell changed cancelled" ${attrs} aria-label="${esc(`${row.name}, ${period} урок: ${relocated?'перенесено':'отменено'}`)}">
-      <span class="flag">изм.</span>
-      <span class="cancelled-mark">—</span>
-      <span class="cancelled-label">${relocated?'перенесено':'отменено'}</span>
-    </button>`;
-  }
-  return `<button type="button" class="cell ${red ? 'changed' : ''}" ${attrs} aria-label="${esc(`${row.name}, ${period} урок: ${title}${red ? ', изменено' : ''}`)}">
-    ${red ? '<span class="flag">изм.</span>' : ''}
-    ${cellContent(S.view, lesson, room)}
-    ${lessonGroupLabel(lesson,row)}
-    ${jointLabel}
-    ${lesson.locked ? `<span class="lock" title="Закреплено">${icon('lock', 10)}</span>` : ''}
-  </button>`;
+  tiles.push(...externalCells(row, period, shown));
+  if (!tiles.length) return lessonCellAt(row, period, shown);
+  return tiles.length === 1 ? tiles[0] : `<div class="cell-stack">${tiles.join('')}</div>`;
+}
+
+function lessonCellAt(row, period, shown, lesson = null, status = '', previous = null) {
+  const teacherIds = lesson?.teacherIds || (S.view === 'teachers' ? [row.id] : []);
+  const absent = (shown.absences || []).some(a => a.first <= period && period <= a.last && teacherIds.includes(a.teacherId));
+  const gap = !lesson && S.view === 'classes' && (shown.classGapDetails || []).some(item => item.classId === row.id && item.periods.includes(period));
+  const displayed = lesson || previous;
+  const info = displayed ? lessonDisplay(S.view, displayed) : {title: ''};
+  const partners = S.view === 'classes' && (lesson?.joint || lesson?.technologyJoint)
+    ? lesson.classIds.filter(id => id !== row.id) : [];
+  const note = [gap && previous ? 'Окно' : '', displayed ? lessonGroupLabel(displayed, row) : '',
+    partners.length ? 'С ' + namesOf('classes', partners) : ''].filter(Boolean).join(' · ');
+  if (!previous && absent) status = 'absent';
+  if (!status && gap) status = 'gap';
+  const label = [info.title, status === 'absent' ? 'Учитель отсутствует' : LESSON_STATUSES[status], note].filter(Boolean).join(', ');
+  const attrs = `${S.preview ? 'data-preview-cell="true"' : 'data-action="lesson"'} draggable="${Boolean(lesson && !S.preview)}"
+    data-row-kind="${S.view}" data-row="${esc(row.id)}" data-period="${period}" data-date="${S.date}" data-lesson="${esc(lesson?.id || '')}"
+    aria-label="${esc(`${row.name}, ${period}-й урок: ${label || 'нет занятия'}`)}"`;
+  return lessonTile({...info, status, note, locked: lesson?.locked}, attrs);
 }
 
 function renderGrid() {
@@ -1500,12 +1509,10 @@ function weekEntityId() {
   return S.weekId;
 }
 
-function weekCell(lesson) {
-  if (!lesson) return '';
-  if (S.weekKind === 'classes') {
-    return `<div class="week-subject">${esc(subjectShort(lesson.subjectId))}</div><div class="week-meta">${esc(namesOf('teachers', lesson.teacherIds))}${lesson.roomIds?.length ? ` · ${esc(namesOf('rooms', lesson.roomIds))}` : ''}</div>`;
-  }
-  return `<div class="week-subject">${esc(namesOf('classes', lesson.classIds))} ${esc(subjectShort(lesson.subjectId))}</div><div class="week-meta">${esc(namesOf('rooms', lesson.roomIds) || '')}</div>`;
+function weekTiles(view, lessons, extra, gap = false) {
+  const ordinary = lessons.map(lesson => lessonTile(lessonDisplay(view, lesson))).join('');
+  const additional = extra.map(activity => lessonTile(externalDisplay(activity, view))).join('');
+  return ordinary + additional || lessonTile(gap ? {status: 'gap'} : {});
 }
 
 function renderWeek() {
@@ -1518,7 +1525,6 @@ function renderWeek() {
   const source = S.weekActual
     ? Object.fromEntries(days.map((date) => [date, lessonsFor(date)]))
     : Object.fromEntries(days.map((date) => [date, datedBaseWeek(date).filter(l => Number(l.day) === dayIndex(date))]));
-  const gaps = [];
   const rows = S.data.school.bells.map((bell, index) => {
     const period = index + 1;
     const cells = days.map((date) => {
@@ -1528,7 +1534,11 @@ function renderWeek() {
       const first = Math.min(...allPeriods);
       const last = Math.max(...allPeriods);
       const gap = !lessons.length && !extra.length && allPeriods.length && period > first && period < last;
-      return `<td class="${gap ? 'week-gap' : ''}"><button type="button" class="week-edit" draggable="${lessons.length && (S.workspace==='draft'||S.weekActual)?'true':'false'}" ${(S.workspace==='draft'||S.weekActual)?'data-week-edit="1"':''} data-lesson="${lessons[0]?.id || ''}" data-date="${date}" data-scope="${S.weekActual ? 'day' : 'base'}" data-row-kind="${kind}" data-row="${id}" data-period="${period}" aria-label="${esc(DAYS[dayIndex(date)] + ', урок ' + period + ': ' + (lessons[0] ? describe(lessons[0]) : 'добавить занятие'))}">${lessons.map(weekCell).join('')+baseExternalText(extra) || '<span class="week-empty">—</span>'}</button></td>`;
+      const summary = lessons.map(describe).concat(extra.map(activity => {
+        const {title, status} = externalDisplay(activity, kind);
+        return status ? title + ' · ' + LESSON_STATUSES[status] : title;
+      })).join(' · ');
+      return `<td><button type="button" class="week-edit" draggable="${lessons.length && (S.workspace==='draft'||S.weekActual)?'true':'false'}" ${(S.workspace==='draft'||S.weekActual)?'data-week-edit="1"':''} data-lesson="${lessons[0]?.id || ''}" data-date="${date}" data-scope="${S.weekActual ? 'day' : 'base'}" data-row-kind="${kind}" data-row="${id}" data-period="${period}" aria-label="${esc(DAYS[dayIndex(date)] + ', урок ' + period + ': ' + (summary || (gap ? 'окно' : 'нет занятия')))}">${weekTiles(kind, lessons, extra, gap)}</button></td>`;
     }).join('');
     return `<tr><th><span class="pnum">${period}</span><small>${esc(bell)}</small></th>${cells}</tr>`;
   }).join('');

@@ -34,10 +34,6 @@ function baseExternalRows(day,period,kind,id) {
   return (S.data.externalActivities||[]).filter(r=>r.weekday===day&&r.first<=period&&period<=r.last&&(!r.cycleWeeks||r.cycleWeeks.includes(S.rotationWeek||1))&&(kind==='teachers'?r.teacherId===id:r.roomId===id));
 }
 
-function baseExternalText(rows) {
-  return rows.map(r=>`<div class="extra-week-cell ${externalTone(r)}"><div class="week-subject">${esc(r.subjectId?subjectShort(r.subjectId):'Нач. кл.')}</div>${externalMeta(r)}</div>`).join('');
-}
-
 function individualLabel(id) {
   const learner=(S.data.individualLearners||[]).find(l=>l.id===id);if(!learner)return 'инд.';
   const group=S.data.individualLearners.filter(l=>l.classId===learner.classId);
@@ -57,8 +53,20 @@ function externalTone(row) {
   return 'extra-individual extra-tone-'+Math.max(0,index)%6;
 }
 
-function externalMeta(row) {
-  return `<span class="meta extra-meta"><span class="extra-label">${esc(row.kind==='individual'?individualLabel(row.learnerId):row.label)}</span>${row.roomId?`<span class="extra-room">${esc(compactRoom(row.roomId))}</span>`:''}</span>`;
+function externalDisplay(row, view) {
+  const individual = row.kind === 'individual';
+  const status = row.movedFrom ? 'moved' : row.cancelled ? 'cancelled' : '';
+  return {
+    subject: row.subjectId ? gridShort(row.subjectId) : individual ? 'Индив.' : 'Нач. кл.',
+    badge: individual ? individualLabel(row.learnerId) : row.label,
+    detail: view === 'rooms' ? teacherSurnames([row.teacherId]) : '',
+    room: view !== 'rooms' && row.roomId ? compactRoom(row.roomId) : '',
+    title: [individual ? individualLabel(row.learnerId) : row.label,
+      row.subjectId ? subjectName(row.subjectId) : individual ? 'Индивидуальное занятие' : 'Начальные классы',
+      nameOf('teachers', row.teacherId), row.roomId ? nameOf('rooms', row.roomId) : ''].filter(Boolean).join(' · '),
+    tone: externalTone(row),
+    status,
+  };
 }
 
 function externalForDate(date) {
@@ -86,13 +94,23 @@ function renderIndividualTools() {
   return `<section class="individual-tools"><div class="extra-toolbar"><label class="field"><span>Ученик</span><select class="input" id="individual-filter"><option value="">Все ученики</option>${learners.map(l=>`<option value="${esc(l.id)}" ${EXTRAS.learner===l.id?'selected':''}>${esc(l.name)} · ${esc(nameOf('classes',l.classId))}</option>`).join('')}</select></label><button class="btn" data-action="individual-learner">Добавить ученика</button>${EXTRAS.learner?`<button class="btn" data-action="individual-learner" data-id="${esc(EXTRAS.learner)}">Изменить карточку</button>`:''}<button class="btn" data-action="download" data-url="/api/extras/individual-report?week=${encodeURIComponent(EXTRAS.week)}&learnerId=${encodeURIComponent(EXTRAS.learner)}" data-name="Индивидуальное расписание.docx">Выгрузить отчёт</button></div><div class="rotation-toolbar"><strong>${cycle?cycleNumber(EXTRAS.week)+'-я неделя цикла':'Еженедельное расписание'}</strong><button class="text-btn" data-action="individual-cycle">Настроить чередование</button></div></section>`;
 }
 
-function externalCell(row,period,shown) {
-  if(!['teachers','rooms'].includes(S.view))return '';
-  const records=[...(shown.externalActivities||[])];
-  for(const change of shown.externalChanges||[])if(change.before&&change.after&&(change.before.first!==change.after.first||change.before.roomId!==change.after.roomId))records.push({...change.before,movedFrom:true});
-  const rows=records.filter(r=>r.first<=period&&period<=r.last&&(S.view==='teachers'?r.teacherId===row.id:r.roomId===row.id));
-  if(!rows.length)return '';
-  return rows.map(r=>`<button type="button" class="cell external-activity ${externalTone(r)} ${r.cancelled||r.movedFrom||shown.externalChanges?.some(c=>c.id===r.id)?'changed':''}" data-action="extra-open-day" data-id="${esc(r.id)}" title="${esc((r.subjectId?subjectName(r.subjectId):'Начальные классы')+' · '+(r.kind==='individual'?individualLabel(r.learnerId):r.label)+(r.roomId?' · '+nameOf('rooms',r.roomId):''))}" aria-label="${esc((r.kind==='individual'?individualLabel(r.learnerId):r.label)+', '+period+'-й урок'+(r.roomId?', кабинет '+nameOf('rooms',r.roomId):''))}"><span class="subj">${r.movedFrom?'Перен. · ':r.cancelled?'Отм. · ':''}${esc(r.subjectId?subjectShort(r.subjectId):r.kind==='primary'?'Нач. кл.':'Индив.')}</span>${externalMeta(r)}</button>`).join('');
+function externalCells(row, period, shown) {
+  if (!['teachers', 'rooms'].includes(S.view)) return [];
+  const field = S.view === 'teachers' ? 'teacherId' : 'roomId';
+  const inSlot = activity => activity && activity[field] === row.id && activity.first <= period && period <= activity.last;
+  const changes = shown.externalChanges || [];
+  const rows = (shown.externalActivities || []).filter(inSlot);
+  for (const {before, after} of changes) {
+    if (inSlot(before) && after && !inSlot(after)) rows.push({...before, movedFrom: true});
+  }
+  return rows.map(activity => {
+    const info = externalDisplay(activity, S.view);
+    const status = info.status || (changes.some(c => c.id === activity.id) ? 'changed' : '');
+    const label = [info.title, LESSON_STATUSES[status]].filter(Boolean).join(', ');
+    const action = S.preview ? 'data-preview-cell="true"' : 'data-action="extra-open-day"';
+    return lessonTile({...info, status}, `${action} data-id="${esc(activity.id)}"
+      aria-label="${esc(`${period}-й урок: ${label}`)}"`);
+  });
 }
 
 function editIndividualLearner(id) {
