@@ -80,6 +80,9 @@ def main():
         (target/'installed-components.json').write_text('{"voice":true}',encoding='utf-8')
         old=subprocess.Popen([sys.executable,'-c','import time;time.sleep(1)'],env=env)
         script=install_script(installer,target,old.pid,manifest['sha256']).replace("'/UPDATE=1'","'/UPDATE=1', '/QA=1'")
+        # Disable the PowerShell fallback for this pass. A 2.25.x app may
+        # invoke the new installer with its older update helper.
+        script=script.split('\nfinally {',1)[0]+'\nfinally {}\n'
         encoded=base64.b64encode(script.encode('utf-16le')).decode('ascii')
         # Reproduce the private environment inherited from a frozen parent.
         # The former source-only test missed the restart failure in this case.
@@ -107,10 +110,12 @@ def main():
                 time.sleep(.2)
             assert 'UI startup: ready ' in (data/'application.log').read_text(encoding='utf-8')
             assert 'UI runtime version: '+manifest['privateDotnet'] in (data/'application.log').read_text(encoding='utf-8')
+            ready=json.loads((data/'window-ready.json').read_text(encoding='utf-8'))
+            assert ready['version']==version and ready['pid']==request(base,'/api/health')['pid']
         finally:request(base,'/api/shutdown',{})
     report={'version':version,'emptyProject':True,'syntheticProjectPreserved':True,'personalSettingsPreserved':True,
             'templatesPreserved':True,'legacySeedMovedToData':True,'voicePreserved':True,'sqliteBackupValid':True,
-            'installerHelperRelaunch':True,'nativeUiReady':True,'genericWordValid':True,'liveModelRequests':0}
+            'silentInstallerRelaunch':True,'nativeUiReady':True,'genericWordValid':True,'liveModelRequests':0}
     (ROOT/'docs/public-install-check.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
     print(json.dumps(report))
 

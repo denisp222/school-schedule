@@ -67,12 +67,18 @@ Name: "{group}\Расписание"; Filename: "{app}\Расписание.exe"
 Name: "{userdesktop}\Расписание"; Filename: "{app}\Расписание.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\app\static\favicon.ico"; AppUserModelID: "School.Raspisanie.2026"; Tasks: desktopicon; Check: not IsQa
 
 [Run]
+Filename: "{app}\Расписание.exe"; Parameters: "--after-update"; WorkingDir: "{app}"; Flags: nowait runasoriginaluser; Check: IsUpdate
 Filename: "{app}\Расписание.exe"; Description: "Открыть расписание"; Flags: nowait postinstall skipifsilent; Check: not IsQa
 
 [Code]
 function IsQa: Boolean;
 begin
   Result := ExpandConstant('{param:QA|0}') = '1';
+end;
+
+function IsUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
 end;
 
 function DataDir(Param: String): String;

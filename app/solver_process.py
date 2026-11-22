@@ -8,6 +8,10 @@ import sys
 import tempfile
 
 
+class DaySolverUnavailable(ValueError):
+    pass
+
+
 def isolated():
     return os.environ.get('SCHEDULE_SOLVER_WORKER')!='1'
 
@@ -28,16 +32,19 @@ def calculate(kind, payload):
                 logging.error('Solver worker failed: code=%s stderr=%r',process.returncode,process.stderr[-2000:])
                 if kind=='file-save':raise ValueError('Сохранение прервалось. Попробуйте другую папку или повторите сохранение.')
                 if kind=='speech':raise ValueError('Голосовой ввод прервался. Повторите запись или введите просьбу текстом.')
+                if kind=='day':raise DaySolverUnavailable('Подбор расписания был прерван.')
                 raise ValueError('Расчёт прервался. Ваше расписание сохранено. Попробуйте выполнить подбор ещё раз; если ошибка повторится, закройте и снова откройте приложение.')
             result=json.loads(target.read_text(encoding='utf-8'))
             if 'error' in result:
                 logging.error('Solver worker error: %s',result['error'])
                 if kind=='file-save':raise ValueError('Не удалось сохранить файл. Выберите другую папку и повторите сохранение.')
                 if kind=='speech':raise ValueError('Не удалось включить голосовой ввод. Повторите запись или переустановите приложение свежим установщиком.')
+                if kind=='day':raise DaySolverUnavailable('Подбор расписания был прерван.')
                 raise ValueError('Не удалось рассчитать расписание. Текущее расписание не изменено. Проверьте учебный план и ограничения.')
             return result['result']
         except subprocess.TimeoutExpired as exc:
             logging.error('Calculation timed out: kind=%s stderr=%r',kind,(exc.stderr or b'')[-2000:])
+            if kind=='day':raise DaySolverUnavailable('Подбор расписания занял слишком много времени.') from None
             if kind=='speech':raise ValueError('Распознавание заняло слишком много времени. Попробуйте более короткую запись.') from None
             if kind=='file-save':raise ValueError('Папка слишком долго не отвечает. Сохранение остановлено; выберите папку на этом компьютере и повторите.') from None
             raise ValueError('Расчёт не завершился вовремя. Текущее расписание сохранено. Попробуйте подобрать изменения только на один день.') from None

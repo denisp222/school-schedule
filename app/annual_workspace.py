@@ -14,7 +14,7 @@ CATALOGS=('teachers','classes','rooms','subjects')
 def clean_project(state):
     result=deepcopy(state)
     result.pop('annualDraft',None);result.pop('baseVersions',None)
-    for key in ('days','dayBases','assistantConditions','dayNotices','externalDays'):result[key]={}
+    for key in ('days','dayBases','assistantConditions','dayNotices','externalDays','dayVariants'):result[key]={}
     for key in ('journal','absences'):result[key]=[]
     from .class_hours import fill_leaders,sync_labels
     fill_leaders(result);sync_labels(result)

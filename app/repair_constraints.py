@@ -10,6 +10,7 @@ from .model import slot_feasible
 from .search_policy import configure
 from .model import changed_assignments
 from .class_hours import cancelled_for_absence,required_room
+from .room_policy import allowed as room_allowed
 
 
 def _seed_solution(model,response):
@@ -17,11 +18,17 @@ def _seed_solution(model,response):
     for i,value in enumerate(response.solution):model.add_hint(model.get_int_var_from_proto_index(i),value)
 
 
-def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, excluded=(),allow_room_changes=None,conditions=(),_seconds=None,_incumbent=None,_primary_bound=None,_placements=None):
+def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, excluded=(),allow_room_changes=None,conditions=(),_seconds=None,_incumbent=None,_primary_bound=None,_placements=None,_limits=None,_allow_drop=False):
     from .solver_process import isolated,calculate
-    if isolated():return calculate('day',dict(state=state,day=day,variant=variant,teacher_ids=sorted(teacher_ids),baseline=baseline,hint=hint,excluded=excluded,allow_room_changes=allow_room_changes,conditions=conditions,_seconds=_seconds,_incumbent=_incumbent,_primary_bound=_primary_bound,_placements=_placements))
+    if isolated():
+        solver_state={k:v for k,v in state.items() if k not in ('dayVariants','annualDraft','journal','importNotes','students')}
+        solver_state['students']=[]
+        return calculate('day',dict(state=solver_state,day=day,variant=variant,teacher_ids=sorted(teacher_ids),baseline=baseline,hint=hint,excluded=excluded,allow_room_changes=allow_room_changes,conditions=conditions,_seconds=_seconds,_incumbent=_incumbent,_primary_bound=_primary_bound,_placements=_placements,_limits=_limits,_allow_drop=_allow_drop))
     if allow_room_changes is None:
-        args=dict(state=state,day=day,variant=variant,teacher_ids=teacher_ids,baseline=baseline,excluded=excluded,conditions=conditions)
+        args=dict(state=state,day=day,variant=variant,teacher_ids=teacher_ids,baseline=baseline,excluded=excluded,conditions=conditions,_allow_drop=_allow_drop)
+        if _limits:
+            fixed=solve_day(**args,hint=hint,allow_room_changes=False,_seconds=.7,_limits=_limits)
+            return fixed or solve_day(**args,hint=hint,allow_room_changes=True,_seconds=1.6,_limits=_limits)
         def certificate(result,bound):
             result['search'].update(primaryProven=True,scope='all-rooms',certificate='room-relaxation',
                                     lowerBoundLostHours=bound['lostHours'],lowerBoundYoungerLate=bound.get('youngerLate',0),lowerBoundMoved=bound['moved'])
@@ -32,7 +39,7 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
         # Solve the smaller time-only problem first. Matching its lower bound
         # with real rooms proves a global minimum without a huge joint search.
         if _primary_bound is None:
-            bound=solve_day(**args,hint=None,allow_room_changes='relaxed',_seconds=1.2);bound_searched=True
+            bound=solve_day(**args,hint=hint,allow_room_changes='relaxed',_seconds=1.2);bound_searched=True
             if bound:
                 projected=solve_day(**args,hint=hint,allow_room_changes=True,_seconds=.8,_placements=bound['placements'])
                 if reaches(projected,bound):return certificate(projected,bound)
@@ -74,25 +81,28 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
     class_rules={r['classId']:r for r in conditions if r['type']=='class_day'}
     group_rules={(r['classId'],r['groupIndex']):r for r in conditions if r['type']=='group_day'}
     pins={r['lessonId']:r['period'] for r in conditions if r['type']=='pin_lesson'}
+    placements={r['lessonId']:r for r in conditions if r['type']=='place_lesson'}
+    pins.update({ident:r['period'] for ident,r in placements.items()})
     pins.update({l['id']:l['period'] for l in before if l.get('classHour')})
     pins.update({l['id']:(l.get('technologyJoint') or l['joint'])['period'] for l in before if l.get('joint') or l.get('technologyJoint')})
     from .commitments import occupancy
     external=occupancy(state,day)
     unit_counts={};has_capacity=any(r.get('capacity') for r in state['rooms'])
-    def rooms_for(unit,p,locked):
+    def rooms_for(unit,p,locked,forced):
         fixed_room=required_room(state,unit)
         if unit.get('classHour') and not fixed_room:return []
         current=(fixed_room,) if fixed_room else tuple(unit['roomIds'])
-        if allow_room_changes=='relaxed':return [current]
+        if allow_room_changes=='relaxed':return [forced if forced is not None else current]
         count=unit_counts[id(unit)]
         def suitable(r):
             room=ix['rooms'][r]
-            from .room_policy import allowed as room_allowed
             return room_allowed(state,unit,room) and not unavailable(room,weekday,p) and (r,p) not in external['rooms'] and (unit.get('classHour') or not room.get('subjectIds') or unit['subjectId'] in room['subjectIds']) and (not room.get('capacity') or count is None or count<=room['capacity'])
+        if forced is not None:return [forced] if all(suitable(r) for r in forced) else []
         options=[current] if all(suitable(r) for r in current) else []
         if locked or fixed_room or len(current)>1 or not allow_room_changes:return options
         # Include rooms freed by other moves, not only rooms free in the base.
-        free=[(r['id'],) for r in sorted(state['rooms'],key=lambda r:r['id']) if suitable(r['id']) and (r['id'],)!=current]
+        free=[(rid,) for rid in sorted(ix['rooms'])
+              if suitable(rid) and (rid,)!=current]
         return options+free
     def absent(t,p):return t in teacher_ids or is_absent(state,t,day,p) or unavailable(ix['teachers'][t],weekday,p) or (t,p) in external['teachers']
     blocked_pairs={(c,l['subjectId'],t) for l in before for c in l['classIds'] for t in l['teacherIds']
@@ -107,13 +117,18 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
             unit=deepcopy(old)
             if position is not None:
                 unit['teacherIds']=[old['teacherIds'][position]];unit['roomIds']=[old['roomIds'][position]];unit['groupIndex']=position
+            placement=placements.get(old['id'])
+            forced=None if not placement or placement.get('roomIds') is None else tuple(placement['roomIds'])
+            if forced is not None:
+                if position is not None:forced=(forced[position],)
+                unit['roomExceptions']=[r for r in placement.get('roomExceptions',[]) if r in forced]
             unit_counts[id(unit)]=student_count(state,unit) if has_capacity else None
             units.append((old,unit)); n=len(units); options=[]
             unit_hint=next((row for row in hinted_rows if (row['id']==old['id'] or row.get('splitFrom')==old['id']) and set(unit['teacherIds']).issubset(row['teacherIds'])),None)
             hint_period=unit_hint['period'] if unit_hint else None
             blocked=any(absent(t,old['period']) for t in unit['teacherIds'])
             pair_blocked=any((c,unit['subjectId'],t) in blocked_pairs for c in unit['classIds'] for t in unit['teacherIds'])
-            cancellation=model.new_bool_var(f'cancel{n}') if ((blocked or pair_blocked) and old['id'] not in pins
+            cancellation=model.new_bool_var(f'cancel{n}') if ((blocked or pair_blocked or _allow_drop) and old['id'] not in pins
                 or cancelled_for_absence(state,old,day)) else None
             if cancellation is not None:loss.append(cancellation*len(unit['teacherIds']))
             for c in unit['classIds']:
@@ -125,7 +140,7 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
                 if any(rule and not rule['first']<=p<=rule['last'] for c in unit['classIds'] for g in groups_for(unit,c)
                        for rule in [group_rules.get((c,g),class_rules.get(c))]):continue
                 if old.get('locked') and p!=old['period']:continue
-                allowed_rooms=rooms_for(unit,p,old.get('locked') or (unit.get('technologyJoint') or unit.get('joint') or {}).get('roomId'))
+                allowed_rooms=rooms_for(unit,p,old.get('locked') or (unit.get('technologyJoint') or unit.get('joint') or {}).get('roomId'),forced)
                 if not allowed_rooms:continue
                 v=model.new_bool_var(f'x{n}_{p}');options.append((v,p))
                 for t in unit['teacherIds']:slots['teachers',t,0,p].append(v)
@@ -195,8 +210,6 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
                     model.add_max_equality(left,daily[:p]);model.add_max_equality(right,daily[p+1:])
                     model.add(hole>=left+right-daily[p]-1);model.add(hole<=left);model.add(hole<=right);model.add(hole+daily[p]<=1)
                     gapvars.append(hole)
-                # Students in either group may arrive later or leave earlier,
-                # but never have a hole between their own lessons.
                 if allow_gaps:pupil_gaps.extend(gapvars)
                 else:model.add(sum(gapvars)==0)
     limits={(c,p['subjectId']):int(p.get('maxPerDay',2)) for p in state['plan'] for c in p['classIds']}
@@ -210,9 +223,15 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
     loss_weight=(len(younger_late)+1)*late_weight
     gap_weight=(len(units)*max((len(unit['teacherIds']) for _,unit in units),default=1)+1)*loss_weight
     primary=sum(pupil_gaps)*gap_weight+sum(loss)*loss_weight+sum(younger_late)*late_weight+sum(moved)
+    if _allow_drop:
+        primary=sum(loss)*(len(pupil_gaps)+1)*loss_weight+sum(pupil_gaps)*loss_weight+sum(younger_late)*late_weight+sum(moved)
     model.minimize(primary)
+    if _limits:
+        for key, expression in [('classGapsAfter',sum(pupil_gaps)),('lostHours',sum(loss)),
+                                ('youngerLate',sum(younger_late)),('moved',sum(moved))]:
+            model.add(expression<=_limits[key])
     incumbent_cost=(_incumbent or {}).get('search',{}).get('modelCost')
-    if incumbent_cost:
+    if incumbent_cost and not _allow_drop:
         # Presentation may count original pupils' lessons across joined groups.
         # Only the model's own cost can safely prune this model's search.
         maximum=(incumbent_cost['classGapsAfter']*gap_weight+incumbent_cost['lostHours']*loss_weight
@@ -220,9 +239,13 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
         model.add(primary<=maximum)
     for previous in excluded:
         identical=[]
-        for (old,unit),(options,cancellation) in zip(units,choices):
+        for n,((old,unit),(options,cancellation)) in enumerate(zip(units,choices),1):
             match=next((l for l in previous if (l['id']==old['id'] or l.get('splitFrom')==old['id']) and set(unit['teacherIds']).issubset(l['teacherIds'])),None)
-            if match:identical.extend(v for v,p in options if p==match['period'])
+            if match and placements and allow_room_changes!='relaxed':
+                matches=tuple(match['roomIds'])
+                if len(matches)>1 and 'groupIndex' in unit:matches=(matches[unit['groupIndex']],)
+                identical.extend(v for v,r in room_choices.get((n,match['period']),[]) if r==matches)
+            elif match:identical.extend(v for v,p in options if p==match['period'])
             elif cancellation is not None:identical.append(cancellation)
         if len(identical)==len(units):model.add(sum(identical)<=len(units)-1)
     solver=cp_model.CpSolver()
@@ -276,6 +299,7 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
         if selected is None:return None
         unit['period']=period
         unit['roomIds']=list(selected)
+        if 'roomExceptions' in unit:unit['roomExceptions']=[r for r in unit['roomExceptions'] if r in selected]
         by_parent[old['id']].append(unit)
     after=[];cancelled=[];group_losses=[];splits=0
     for old in before:
@@ -286,6 +310,8 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
             matching={t:part['roomIds'][0] for part in parts if part['roomIds'] for t in part['teacherIds']}
             if any(t not in matching for t in old['teacherIds']):return None
             combined['roomIds']=[matching[t] for t in old['teacherIds']]
+            if any('roomExceptions' in part for part in parts):
+                combined['roomExceptions']=[r for part in parts for r in part.get('roomExceptions',[])]
             after.append(combined);continue
         if len(old['teacherIds'])>1:
             parts.sort(key=lambda p:(p['period']!=old['period'],p.get('groupIndex',0)))

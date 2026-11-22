@@ -257,7 +257,13 @@ def _day_payload(state: dict, day: str) -> dict:
     for change in changes:
         if not change["after"] and change["id"] in moved_to:
             change["movedTo"] = moved_to[change["id"]]
-    problems = issues(state, lessons, day)
+    review=state
+    closures=[r for r in state.get('assistantConditions',{}).get(day,[]) if r['type']=='room_unavailable']
+    if closures:
+        review={**state,'rooms':deepcopy(state['rooms'])}
+        from .ai_planner import apply_room_closures
+        apply_room_closures(review,parse_date(day).weekday(),closures)
+    problems = issues(review, lessons, day)
     absences = []
     for absence in state["absences"]:
         if iso(absence["start"]) <= day <= iso(absence["end"]):
@@ -353,6 +359,7 @@ def _repair_summary(result: dict) -> dict:
         "otherChanges": result.get("otherChanges") or {},
         "warnings": result.get("warnings") or [],
         "stats": result.get("stats"),
+        "unfulfilled": result.get("unfulfilled") or [],
         "search":result.get("search"),
         "inputFingerprint":result.get("inputFingerprint"),
         "absentTeachers": result.get("absentTeachers") or [],
@@ -405,7 +412,7 @@ def _repair_variants(state: dict, day: str, allow_other: bool, reason: str,
         repair_previews[token]={'revision':revision,'result':deepcopy(result),'date':day}
         summaries.append({**_repair_summary(result),'id':index,'previewId':token})
     if not summaries:
-        return {'status':'infeasible','variants':[],'revision':revision,'warnings':['Без окон у учеников допустимый вариант пока не найден. Текущее расписание не изменено.']}
+        return {'status':'infeasible','variants':[],'revision':revision,'warnings':['Проверьте расписание и ограничения на выбранный день.']}
     return {**summaries[0],'variants':summaries,'recommended':0,'revision':revision}
 
 
@@ -451,7 +458,7 @@ def repair_apply(body: dict):
             raise ValueError(result.get("message") or "Не удалось подобрать вариант.")
         if result.get('actions'):
             from .ai_planner import commit
-            return commit(state,day,result['actions'],result)
+            return commit(state,day,result['actions'],result,reason=reason,save_version=True)
         conditions=state.get('assistantConditions',{}).get(day)
         if conditions:
             from .ai_planner import condition_problems
@@ -720,6 +727,100 @@ def _commit_day(state: dict, day: str, before: list[dict], after: list[dict], re
     _journal(state, day, before, after, reason)
 
 
+@app.get('/api/day/{day}/versions')
+def list_day_versions(day:str):
+    from .day_variants import summaries
+    current=project_store().read()
+    return {'revision':current['revision'],'versions':summaries(current['state'],require_day(day))}
+
+
+@app.post('/api/day/{day}/versions/save')
+def save_day_version(day:str,body:dict):
+    from .day_variants import capture, save, summaries
+    from .assistant_api import _previews, recalled
+    from .ai_planner import commit
+    day=require_day(day)
+    revision=require_revision(body)
+    token=body.get('previewId')
+    result=None
+    reason='Перестановки'
+    if token:
+        if body.get('channel')=='repair':
+            value=repair_previews.get(token)
+            if not value or value['revision']!=revision:raise Conflict('Вариант устарел. Выполните подбор заново.')
+        else:
+            value=recalled(_previews,token,revision)
+        if value['date']!=day:raise ValueError('Вариант относится к другой дате.')
+        result=value['result']
+        reason=value.get('reason',reason)
+    def change(state):
+        candidate=state if result is None else commit(deepcopy(state),day,result.get('actions',[]),deepcopy(result),reason=reason)
+        save(state,day,capture(candidate,day),body.get('title'))
+    saved=project_store().mutate(revision,'Сохранён вариант на '+day,change)
+    return {**saved,'versions':summaries(saved['state'],day),'day':_day_payload(saved['state'],day)}
+
+
+def _apply_saved_day(state,day,variant):
+    from .day_variants import use
+    from .ai_planner import prepared_state
+    state=use(state,day,variant)
+    validate_state(state)
+    conditions=[r for r in variant['conditions'] if r['type'] in ('room_unavailable','allow_class_gaps')]
+    checked=prepared_state(state,day,conditions)
+    problems=[i['message'] for i in issues(checked,lessons_for_day(state,day),day)
+              if i['level']=='error' or i['code']=='pair_incomplete']
+    if problems:
+        raise ValueError('Изменились ограничения школы. '+problems[0])
+    return state
+
+
+@app.post('/api/day/{day}/versions/preview')
+def preview_day_version(day:str,body:dict):
+    from .day_variants import lookup
+    from .model import changed_assignments
+    day=require_day(day)
+    current=project_store().read()
+    if require_revision(body)!=current['revision']:raise Conflict('Расписание изменилось. Обновите страницу.')
+    state=current['state']
+    version=lookup(state,day,body.get('id'))
+    before=lessons_for_day(state,day)
+    work=_apply_saved_day(deepcopy(state),day,version)
+    payload=_day_payload(work,day)
+    changes=diff_lessons(before,payload['lessons'])
+    payload.update(base=before,changes=changes)
+    summary={'id':0,'savedId':version['id'],'title':version['title'],'day':payload,'changes':changes,
+             'stats':{'moved':changed_assignments(before,payload['lessons']),
+                      'cancelled':sum(r['after'] is None and not r.get('joinedInto') for r in changes),
+                      'classGapDetails':payload['classGapDetails']}}
+    return {'date':day,'revision':current['revision'],'variants':[summary]}
+
+
+@app.post('/api/day/{day}/versions/apply')
+def apply_day_version(day:str,body:dict):
+    from .day_variants import capture,lookup,save
+    day=require_day(day)
+    def change(state):
+        target=lookup(state,day,body.get('id'))
+        previous=capture(state,day)
+        save(state,day,previous,'Перед переключением '+datetime.now().strftime('%H:%M'),rename=False)
+        _apply_saved_day(state,day,target)
+        _journal(state,day,previous['lessons'],target['lessons'],'Выбран вариант «'+target['title']+'»')
+    saved=project_store().mutate(require_revision(body),'Переключён вариант на '+day,change)
+    return {**saved,'day':_day_payload(saved['state'],day)}
+
+
+@app.post('/api/day/{day}/versions/delete')
+def delete_day_version(day:str,body:dict):
+    from .day_variants import lookup,summaries
+    day=require_day(day)
+    def change(state):
+        variant=lookup(state,day,body.get('id'))
+        state['dayVariants'][day].remove(variant)
+        if not state['dayVariants'][day]:state['dayVariants'].pop(day)
+    saved=project_store().mutate(require_revision(body),'Удалён вариант на '+day,change)
+    return {**saved,'versions':summaries(saved['state'],day)}
+
+
 @app.post("/api/lesson")
 def edit_lesson(body: dict):
     revision = require_revision(body)
@@ -845,6 +946,12 @@ def move_lesson(body: dict):
 
     saved = project_store().mutate(revision, "Перетаскивание урока", change)
     return {"revision": saved["revision"], "state": saved["state"], "day": _day_payload(saved["state"], day)}
+
+
+@app.post('/api/lesson/placement-preview')
+def lesson_placement_preview(body:dict):
+    from .assistant_api import placement_preview
+    return placement_preview(body)
 
 
 @app.post('/api/lesson/targets')

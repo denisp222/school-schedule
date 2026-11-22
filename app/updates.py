@@ -185,20 +185,45 @@ def ps_quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def mark_window_ready(data,app_version):
+    from datetime import datetime,timezone
+    temporary=Path(data)/f'.window-ready-{os.getpid()}.tmp'
+    try:
+        temporary.write_text(json.dumps({'pid':os.getpid(),'version':app_version,
+                                         'opened':datetime.now(timezone.utc).isoformat()}),encoding='utf-8')
+        temporary.replace(Path(data)/'window-ready.json')
+    except OSError:
+        logging.info('Could not record desktop readiness',exc_info=True)
+    finally:
+        try:temporary.unlink(missing_ok=True)
+        except OSError:pass
+
+
 def install_script(installer, folder, pid, expected_hash, ready=None):
     """Separate Windows process waits for all executable locks to be released."""
-    # No network access or school paths are passed to this helper.
     if '"' in str(folder):raise ValueError('Папка установки содержит недопустимый символ.')
     acknowledge=f"[System.IO.File]::WriteAllText({ps_quote(ready)}, 'ready')" if ready else ''
     return f"""$ErrorActionPreference = 'Stop'
 $env:PSModulePath = $env:SystemRoot + '\\System32\\WindowsPowerShell\\v1.0\\Modules'
 $setup = {ps_quote(installer)}
 $folder = {ps_quote(folder)}
+$data = $env:SCHEDULE_DATA
+$desktop = Join-Path $folder 'Расписание.exe'
+$started = [DateTimeOffset]::UtcNow
+function WindowIsReady {{
+  if (-not $data) {{ return $false }}
+  try {{
+    $mark = Get-Content -LiteralPath (Join-Path $data 'window-ready.json') -Raw | ConvertFrom-Json
+    return ([DateTimeOffset]::Parse($mark.opened) -ge $started -and
+      [bool](Get-Process -Id $mark.pid -ErrorAction SilentlyContinue))
+  }} catch {{ return $false }}
+}}
 if ((Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant() -ne {ps_quote(expected_hash)}) {{ exit 2 }}
 {acknowledge}
 Wait-Process -Id {int(pid)} -Timeout 120 -ErrorAction SilentlyContinue
 if (Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue) {{ exit 3 }}
 $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS', '/UPDATE=1', ('/DIR="' + $folder + '"'))
+if ($data) {{ $arguments += ('/LOG="' + (Join-Path $data 'update-install.log') + '"') }}
 $start = New-Object System.Diagnostics.ProcessStartInfo
 $start.FileName = $setup
 $start.Arguments = $arguments -join ' '
@@ -214,9 +239,17 @@ try {{
   $process.WaitForExit()
 }}
 finally {{
-  $start.FileName = Join-Path $folder 'Расписание.exe'
-  $start.Arguments = ''
-  if ([System.IO.File]::Exists($start.FileName)) {{ [System.Diagnostics.Process]::Start($start) | Out-Null }}
+  if ([System.IO.File]::Exists($desktop)) {{
+    # Inno Setup launches the new app itself, including in silent mode.
+    # The helper also supports installers that lack the silent restart.
+    for ($i = 0; $i -lt 40 -and -not (WindowIsReady); $i++) {{ Start-Sleep -Milliseconds 300 }}
+    if (-not (WindowIsReady)) {{
+      $start.FileName = $desktop
+      $start.Arguments = '--after-update'
+      try {{ [System.Diagnostics.Process]::Start($start) | Out-Null }}
+      catch {{ Start-Process -FilePath $desktop -WorkingDirectory $folder -ArgumentList '--after-update' }}
+    }}
+  }}
 }}
 """
 

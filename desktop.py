@@ -33,7 +33,7 @@ def choose_port(data):
     if available is None:raise RuntimeError('Все рабочие подключения заняты.')
     return available,False
 
-def focus_existing(data):
+def focus_existing(data, *, minimum_version=None):
     from ctypes import wintypes
     try:
         row=json.loads((data/'server.json').read_text(encoding='utf-8'))
@@ -41,6 +41,9 @@ def focus_existing(data):
         from urllib.parse import urlparse
         info=health(urlparse(row['url']).port)
         if not info or info.get('pid')!=pid or info.get('app')!='raspisanie' or Path(info.get('data','')).resolve()!=data.resolve():return False
+        if minimum_version:
+            from app.updates import version
+            if version(info.get('version'))<version(minimum_version):return False
     except Exception:return False
     user=ctypes.windll.user32;found=[]
     @ctypes.WINFUNCTYPE(wintypes.BOOL,wintypes.HWND,wintypes.LPARAM)
@@ -70,15 +73,20 @@ def main():
     no_window='--no-browser' in sys.argv;mutex=None
     if sys.platform=='win32' and not no_window:
         kernel=ctypes.windll.kernel32;kernel.CreateMutexW.restype=ctypes.c_void_p
-        mutex=kernel.CreateMutexW(None,False,'Local\\Raspisanie-'+hashlib.sha256(str(data).casefold().encode()).hexdigest()[:20])
+        mutex_name='Local\\Raspisanie-'+hashlib.sha256(str(data).casefold().encode()).hexdigest()[:20]
+        mutex=kernel.CreateMutexW(None,False,mutex_name)
         if kernel.GetLastError()==183:
-            focused=False
-            for _ in range(100):
-                if focus_existing(data):focused=True;break
-                time.sleep(.1)
             kernel.CloseHandle.argtypes=[ctypes.c_void_p]
-            kernel.CloseHandle(mutex)
-            return
+            restarting='--after-update' in sys.argv
+            deadline=time.monotonic()+(35 if restarting else 10)
+            while True:
+                kernel.CloseHandle(mutex)
+                if focus_existing(data,minimum_version=VERSION if restarting else None) or time.monotonic()>=deadline:
+                    return
+                time.sleep(.15)
+                mutex=kernel.CreateMutexW(None,False,mutex_name)
+                if kernel.GetLastError()!=183:
+                    break
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('School.Raspisanie.2026')
     # Always open the working timetable first. Network checks and explicit
     # approval are handled by the main UI after it has finished loading.
@@ -104,12 +112,12 @@ def main():
         if server:
             from app.server import app
             def shutdown():
-                server.should_exit=True
                 close()
             app.state.shutdown=shutdown
             from app.update_api import UpdateManager
             app.state.update_manager=UpdateManager(data,resources,folder,shutdown)
-    try:run_window(url,data,resources,on_ready)
+    from app.updates import mark_window_ready
+    try:run_window(url,data,resources,on_ready,on_loaded=lambda:mark_window_ready(data,VERSION))
     finally:
         if server:server.should_exit=True
         if thread:thread.join(timeout=6)

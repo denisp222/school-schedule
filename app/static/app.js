@@ -677,6 +677,7 @@ function renderDay() {
         </div>
         <div class="toolbar-right">
           ${changedActions}
+          ${S.preview?'':button('Варианты дня','day-versions','small ghost','history')}
           ${day.externalChanges?.length?`<button class="text-btn" data-action="external-changes">Дополнительные изменения (${day.externalChanges.length})</button>`:''}
           ${S.preview?'':'<button type="button" class="btn small ghost" data-action="show-load">Распределение часов</button>'}
           <button type="button" class="btn small ghost" data-action="issues">${icon('alert')}Проверка</button>
@@ -794,11 +795,11 @@ function changeRow(change) {
   const before = change.before;
   const after = change.after;
   if (!after) {
-    const moved = change.movedTo ? `Перенесено на ${DAYS[dayIndex(change.movedTo)]}, ${fmtDate(change.movedTo)}` : 'Отменено';
+    const moved = change.joinedInto ? 'Включено в совместный урок' : change.movedTo ? `Перенесено на ${DAYS[dayIndex(change.movedTo)]}, ${fmtDate(change.movedTo)}` : 'Отменено';
     return `<div class="change-row">
       <div class="old">${esc(fullLesson(before))}</div>
       <div class="arrow">→</div>
-      <div class="new ${change.movedTo ? '' : 'cancel'}">${esc(moved)}<small>${esc(lessonMoment(before))}</small></div>
+      <div class="new ${change.movedTo || change.joinedInto ? '' : 'cancel'}">${esc(moved)}<small>${esc(lessonMoment(before))}</small></div>
     </div>`;
   }
   if (!before) {
@@ -1192,6 +1193,12 @@ function formChecked(name) {
   return $$(`#sheet-form [name="${name}"]:checked`).map((node) => node.value);
 }
 
+async function previewLessonPlacement(placement,view=S.view) {
+  const result=await api('/lesson/placement-preview',{...placement,revision:S.revision});
+  if(!result.variants.length)throw new Error(result.message);
+  await showSchedulePreview('manual',placement.date,result.variants,0,result.revision,view);
+}
+
 document.addEventListener('dblclick', event => {
   const cell = event.target.closest('[data-week-edit]');
   if (cell) openLessonSheet(cell.dataset);
@@ -1223,6 +1230,19 @@ async function submitLesson(form, context) {
     roomExceptions:data.has('allowSpecialRoom')?formChecked('roomIds').filter(id=>by('rooms',id)?.usePolicy==='manual'):[],
     locked: data.has('locked'),
   };
+  const existing=context.existing;
+  if(context.scope==='day' && existing && lesson.locked===!!existing.locked &&
+     JSON.stringify(lesson.teacherIds)===JSON.stringify(existing.teacherIds)) {
+    const changedRoom=JSON.stringify(lesson.roomIds)!==JSON.stringify(existing.roomIds) ||
+      JSON.stringify(lesson.roomExceptions)!==JSON.stringify(existing.roomExceptions || []);
+    const swapId=data.get('swapId');
+    const swap=swapId?lessonsFor(context.date).find(l=>l.id===swapId):null;
+    if(changedRoom || swap || lesson.period!==existing.period) {
+      await previewLessonPlacement({date:context.date,lessonId:lesson.id,period:swap?.period || lesson.period,swapId,
+        roomIds:changedRoom?lesson.roomIds:null,roomExceptions:changedRoom?lesson.roomExceptions:[],reason:data.get('reason')});
+      return;
+    }
+  }
   const result = await api('/lesson', {
     revision: S.revision,
     scope: context.scope,
@@ -2459,7 +2479,8 @@ document.addEventListener('dragstart', (event) => {
     event.preventDefault();
     return;
   }
-  S.dragLesson = { id: cell.dataset.lesson, period: Number(cell.dataset.period), date:cell.dataset.date || S.date, scope:cell.dataset.scope || 'day' };
+  S.dragLesson = { id: cell.dataset.lesson, period: Number(cell.dataset.period), date:cell.dataset.date || S.date,
+    scope:cell.dataset.scope || 'day', row:cell.dataset.row, rowKind:cell.dataset.rowKind };
   S.lastDrag=S.dragLesson;
   S.dragTargets = null;
   S.suppressClickUntil = Date.now() + 900;
@@ -2510,7 +2531,8 @@ document.addEventListener('drop', async (event) => {
     clearDropTargets();S.dragLesson=null;await askConfirm({title:'Выберите место в этом же дне',text:'Ежедневные изменения не переносят уроки на другие дни. Базовую неделю можно перестраивать в отдельном черновике.',yes:'Понятно'});return;
   }
   const targetId = cell.dataset.lesson || '';
-  const permission = dropPermission(cell);
+  const drag=S.dragLesson;
+  const permission = drag.scope==='base'?dropPermission(cell):null;
   const source = dragRows().find(lesson=>lesson.id===sourceId);
   const rowField = {teachers:'teacherIds',classes:'classIds',rooms:'roomIds'}[cell.dataset.rowKind];
   clearDropTargets();
@@ -2518,6 +2540,25 @@ document.addEventListener('drop', async (event) => {
   S.dragLesson = null;
   S.suppressClickUntil = Date.now() + 900;
   if (sourceId === targetId) return;
+  if(drag.scope==='day' && source) {
+    const period=Number(cell.dataset.period);
+    const changingRoom=cell.dataset.rowKind==='rooms' && !source.roomIds.includes(cell.dataset.row);
+    if(!changingRoom && !targetId && rowField && !source[rowField].includes(cell.dataset.row)){
+      toast('Выберите клетку этого класса, учителя или кабинета.','error');return;
+    }
+    if(!changingRoom && source.period===period)return;
+    let roomIds=null;
+    let roomExceptions=[];
+    if(changingRoom) {
+      if(drag.rowKind!=='rooms'){toast('Откройте вкладку «Кабинеты», чтобы выбрать другой кабинет.','error');return;}
+      roomIds=source.roomIds.map(id=>id===drag.row?cell.dataset.row:id);
+      roomExceptions=(source.roomExceptions || []).filter(id=>roomIds.includes(id));
+    }
+    await assistantWork('Проверяем ручную перестановку…',()=>previewLessonPlacement({
+      date:drag.date,lessonId:sourceId,period,roomIds,roomExceptions,
+    },S.view));
+    return;
+  }
   if (permission?.allowed===false) { await askConfirm({title:'Сюда нельзя перенести урок',text:permission.reason,yes:'Понятно'}); return; }
   if (!targetId && rowField && !source[rowField].includes(cell.dataset.row)) {
     await askConfirm({title:'Урок остаётся у своего учителя и класса',text:'Выберите свободную клетку в строке этого учителя, класса или кабинета.',yes:'Понятно'}); return;

@@ -1119,6 +1119,16 @@ dialog::backdrop {
 .preview-heading { display:flex;flex-wrap:wrap;align-items:baseline;gap:16px;margin-bottom:16px; }
 .preview-heading h2 { font:650 20px var(--font);margin:0; }
 .preview-heading span { font-size:13px;color:var(--ink-2); }
+.preview-diff { margin:14px 0 18px; border-bottom:1px solid var(--line); }
+.preview-diff summary { cursor:pointer; padding:10px 0; font-weight:650; }
+.preview-diff .change-list { padding-bottom:12px; }
+.day-version-heading { margin:22px 0 6px; font-size:15px; }
+.day-version-list { margin:0; padding:0; list-style:none; }
+.day-version-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; padding:12px 0; border-bottom:1px solid var(--line); }
+.day-version-label { flex:1 1 170px; min-width:0; overflow-wrap:anywhere; }
+.day-version-label small { display:block; margin-top:3px; color:var(--ink-2); }
+.day-version-actions { display:flex; flex-wrap:wrap; gap:6px; }
+.day-version-empty { margin:16px 0 0; color:var(--ink-2); }
 [data-preview-cell] { cursor:default; }
 .assistant-advanced { margin: 18px 0; }
 .assistant-advanced summary, .assistant-capabilities summary { cursor: pointer; font-weight: 600; padding: 6px 0; }

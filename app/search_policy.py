@@ -3,7 +3,7 @@ from copy import deepcopy
 import hashlib
 import json
 
-POLICY_VERSION=3
+POLICY_VERSION=4
 
 
 def canonical_state(state,*,clone=True):
@@ -40,7 +40,7 @@ def configure(solver,work,seed=7):
 
 def fingerprint(state,day,actions):
     work=canonical_state(state)
-    for field in ('journal','students','importNotes'):work.pop(field,None)
+    for field in ('journal','students','importNotes','dayVariants'):work.pop(field,None)
     work['absences']=sorted([{k:v for k,v in row.items() if k not in ('id','reason')}
                               for row in work.get('absences',[])],key=lambda row:json.dumps(row,sort_keys=True))
     encoded=json.dumps([POLICY_VERSION,work,day,canonical_actions(actions)],ensure_ascii=False,sort_keys=True)

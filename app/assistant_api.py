@@ -170,28 +170,93 @@ def interpret(body: dict):
 
 @router.post('/preview')
 def preview(body: dict):
-    server = context()
     current = snapshot(body)
     draft = recalled(_drafts, body.get('draftId'), current['revision'])
     day = draft['date']
-    results = ai_planner.variants(current['state'], day, draft['draft']['actions'])
+    return calculate_previews(body,current,day,draft['draft']['actions'],threadId=draft.get('threadId'),turnId=draft.get('turnId'))
+
+
+def calculate_previews(body,current,day,actions,**metadata):
+    server=context()
+    results=ai_planner.variants(current['state'],day,actions)
     snapshot(body)
-    if not results:
-        return {'date': day, 'variants': [], 'revision': current['revision'],
-                'message': 'Не найден вариант по всем условиям, включая резервный вариант с окнами. Проверьте время прихода классов, закреплённые уроки и доступность учителей и кабинетов.'}
     summaries = []
     for i, result in enumerate(results):
-        actions=result.get('actions',draft['draft']['actions'])
+        applied=result.get('actions',actions)
         token = remember(_previews, {'revision': current['revision'], 'date': day,
-                                    'actions':actions,'result':result,
-                                    'threadId':draft.get('threadId'),'turnId':draft.get('turnId')})
-        work=ai_planner.prepared_state(current['state'],day,actions)
+                                    'actions':applied,'result':result,**metadata})
+        work=ai_planner.prepared_state(current['state'],day,applied)
         work['days'][day]=deepcopy(result['after'])
         payload=server._day_payload(work,day)
         # Compare each option against today's current schedule, not just August.
         payload['base']=deepcopy(result['before']);payload['changes']=result['changes']
         summaries.append({**server._repair_summary(result),'day':payload,'previewId':token,'id':i})
-    return {'date': day, 'variants': summaries, 'revision': current['revision']}
+    return {'date':day,'variants':summaries,'revision':current['revision'],
+            'message':'' if summaries else 'Проверьте расписание и ограничения на выбранный день.'}
+
+
+@router.post('/replay')
+def replay(body:dict):
+    current=snapshot(body)
+    thread=history().get(str(body.get('threadId','')))
+    day=context().require_day(thread['date'])
+    requests=[]
+    for turn in thread['turns']:
+        requests.append(turn['request'])
+        if turn['id']==body.get('turnId'):
+            response=turn['response'] or {}
+            break
+    else:
+        raise ValueError('Запрос в диалоге не найден.')
+    if not response.get('actions') or response.get('questions') or response.get('unsupported'):
+        raise ValueError('Условия этого запроса ещё нуждаются в уточнении.')
+    raw={key:response.get(key) for key in ('date','reply','actions','questions','unsupported')}
+    draft,_=ai_planner.validate_interpretation(raw,current['state'],day,'\n'.join(requests),replay=True)
+    return calculate_previews(body,current,day,draft['actions'],threadId=thread['id'],turnId=turn['id'])
+
+
+def placement_preview(body:dict):
+    from .model import indexes,lessons_for_day,parse_date,period_allowed,subject_time_allowed
+    from .schemas import integer
+    from .class_hours import required_room
+    server=context();current=snapshot(body);state=current['state'];day=server.require_day(body.get('date',''))
+    rows={l['id']:l for l in lessons_for_day(state,day)}
+    source=rows.get(str(body.get('lessonId','')))
+    if source is None:raise ValueError('Урок в выбранном дне больше не найден.')
+    period=integer(body.get('period'),'Номер урока',minimum=1,maximum=8)
+    room_ids=body.get('roomIds')
+    room_exceptions=body.get('roomExceptions',[])
+    ix=indexes(state)
+    if (room_ids is not None and (not isinstance(room_ids,list) or any(not isinstance(r,str) or r not in ix['rooms'] for r in room_ids)
+                                  or len(room_ids)!=len(set(room_ids)) or len(room_ids)>len(source['teacherIds'])
+                                  or len(source['teacherIds'])>1 and len(room_ids)!=len(source['teacherIds']))
+            or not isinstance(room_exceptions,list) or any(not isinstance(r,str) or r not in (room_ids or []) or
+                                                           ix['rooms'][r].get('usePolicy')!='manual' for r in room_exceptions)):
+        raise ValueError('Проверьте выбранные кабинеты и их соответствие подгруппам.')
+    weekday=parse_date(day).weekday()
+    if not period_allowed(state,source,period,weekday,date=day):
+        raise ValueError('Для восьмого урока нужно отдельное разрешение на эту дату.')
+    if not subject_time_allowed(ix['subjects'][source['subjectId']],source,weekday,period,day):
+        raise ValueError('Для переноса «Разговоров о важном» укажите номер урока AI-помощнику.')
+    if source.get('locked') and (period!=source['period'] or room_ids is not None and room_ids!=source['roomIds']):
+        raise ValueError('Снимите закрепление этого урока в редакторе перед перестановкой.')
+    fixed=source.get('joint') or source.get('technologyJoint') or source.get('classHour')
+    if fixed and (period!=source['period'] or room_ids is not None and
+                  (required_room(state,source) and room_ids!=source['roomIds'] or fixed.get('roomId') and room_ids!=source['roomIds'])):
+        raise ValueError('Место этого совместного занятия или классного часа задано в его условиях.')
+    actions=list(state.get('assistantConditions',{}).get(day,[]))
+    actions.append({'type':'place_lesson','lessonId':source['id'],'period':period,'roomIds':room_ids,'roomExceptions':room_exceptions})
+    swap_id=body.get('swapId')
+    if swap_id:
+        partner=rows.get(str(swap_id))
+        if (partner is None or partner['id']==source['id'] or partner['period']!=period
+                or partner.get('locked') or any(partner.get(key) for key in ('joint','classHour','technologyJoint'))):
+            raise ValueError('С этим уроком нельзя обменяться. Выберите другое занятие.')
+        actions.append({'type':'place_lesson','lessonId':partner['id'],'period':source['period'],'roomIds':None})
+    response=calculate_previews(body,current,day,actions,reason=str(body.get('reason') or 'Ручная перестановка')[:200])
+    if not response['variants']:
+        response['message']='Для выбранного места с текущими ограничениями подходящий вариант не найден. Выберите другой урок или кабинет.'
+    return response
 
 
 @router.post('/class-hour-preview')
@@ -207,16 +272,7 @@ def class_hour_preview(body: dict):
     actions += [{'type':'class_hour','classId':c,'lessonId':None,'period':period} for c in classes]
     raw={'date':day,'reply':'Классный час','questions':[],'unsupported':[],'actions':actions}
     draft,_=ai_planner.validate_interpretation(raw,current['state'],day,'Назначить классный час первым уроком')
-    results=ai_planner.variants(current['state'],day,draft['actions']);snapshot(body)
-    summaries=[]
-    for i,result in enumerate(results):
-        actions=result.get('actions',draft['actions'])
-        token=remember(_previews,{'revision':current['revision'],'date':day,'actions':actions,'result':result})
-        work=ai_planner.prepared_state(current['state'],day,actions);work['days'][day]=deepcopy(result['after'])
-        payload=server._day_payload(work,day);payload.update(base=deepcopy(result['before']),changes=result['changes'])
-        summaries.append({**server._repair_summary(result),'day':payload,'previewId':token,'id':i})
-    return {'date':day,'revision':current['revision'],'variants':summaries,
-            'message':'' if summaries else 'Классный час не удалось разместить без окон и пересечений. Проверьте занятость классных руководителей и спаренные уроки.'}
+    return calculate_previews(body,current,day,draft['actions'])
 
 
 @router.post('/technology-preview')
@@ -231,17 +287,7 @@ def technology_preview(body: dict):
     confirmation='Разрешаю указанные объединения подгрупп технологии'
     if body.get('safetyApproved') is True:confirmation+='; подтверждаю безопасные условия работы'
     draft,_=ai_planner.validate_interpretation(raw,current['state'],day,confirmation)
-    results=ai_planner.variants(current['state'],day,draft['actions'])
-    snapshot(body)
-    summaries=[]
-    for i,result in enumerate(results):
-        actions=result.get('actions',draft['actions'])
-        token=remember(_previews,{'revision':current['revision'],'date':day,'actions':actions,'result':result})
-        work=ai_planner.prepared_state(current['state'],day,actions);work['days'][day]=deepcopy(result['after'])
-        payload=server._day_payload(work,day);payload.update(base=deepcopy(result['before']),changes=result['changes'])
-        summaries.append({**server._repair_summary(result),'day':payload,'previewId':token,'id':i})
-    return {'date':day,'variants':summaries,'revision':current['revision'],
-            'message':'' if summaries else 'Без окон у учеников вариант не найден. Проверьте состав подгрупп и условия дня.'}
+    return calculate_previews(body,current,day,draft['actions'])
 
 
 @router.post('/apply')
@@ -250,8 +296,11 @@ def apply(body: dict):
     current = snapshot(body)
     value = recalled(_previews, body.get('previewId'), current['revision'])
     day = value['date']
+    reason=value.get('reason','Перестановки по условиям помощника')
+    manual=any(r['type']=='place_lesson' for r in value['actions'])
     saved = server.store.mutate(current['revision'], f'Помощник: изменения на {day}',
-                               lambda state: ai_planner.commit(state, day, value['actions'], value['result']))
+                               lambda state: ai_planner.commit(state,day,value['actions'],value['result'],
+                                                               reason=reason,save_version=not manual))
     with _lock:
         _previews.pop(body.get('previewId'), None)
     if value.get('turnId'):history().finish(value['turnId'],status='applied')

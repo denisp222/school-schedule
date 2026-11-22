@@ -9,7 +9,7 @@ from time import monotonic
 from uuid import uuid4
 
 
-def run_window(url, data, resources, on_ready, *, qa_browser_arguments='', qa_script='', qa_message=None):
+def run_window(url, data, resources, on_ready, *, on_loaded=None, qa_browser_arguments='', qa_script='', qa_message=None):
     if (qa_browser_arguments or qa_script or qa_message) and not data.name.endswith('-qa'):
         raise ValueError('Window test hooks require a separate QA folder.')
     from concurrent.futures import ThreadPoolExecutor
@@ -64,6 +64,8 @@ def run_window(url, data, resources, on_ready, *, qa_browser_arguments='', qa_sc
                     if message.get('kind')=='ui-startup':
                         from app.startup import record
                         record(message)
+                        if message.get('stage')=='ready' and on_loaded is not None:
+                            on_loaded()
                         return
                     if message.get('kind')=='startup-diagnostics':
                         from app.startup import report

@@ -49,6 +49,14 @@ class Pin(StrictModel):
     period: Period
 
 
+class Placement(StrictModel):
+    type: Literal['place_lesson']
+    lessonId: str
+    period: Period
+    roomIds: list[str] | None = None
+    roomExceptions: list[str] = Field(default_factory=list)
+
+
 class Room(StrictModel):
     type: Literal['room_unavailable']
     roomId: str
@@ -119,7 +127,7 @@ class AllowTechnology(StrictModel):
     classIds: list[str] = Field(max_length=40)
 
 
-Action = Annotated[Absence | ClassDay | Pin | Room | Cancel | Join | Eighth | ClassHour | GroupDay | JoinTechnology | AllowTechnology | AllowClassGaps, Field(discriminator='type')]
+Action = Annotated[Absence | ClassDay | Pin | Placement | Room | Cancel | Join | Eighth | ClassHour | GroupDay | JoinTechnology | AllowTechnology | AllowClassGaps, Field(discriminator='type')]
 
 
 class Interpretation(StrictModel):
@@ -334,7 +342,7 @@ def _check_rov_time(state, day, subject, lesson, row, request_text):
     raise AssistantError('По умолчанию «Разговоры о важном» идут первым уроком понедельника. Для переноса укажите точный номер урока на выбранный понедельник.')
 
 
-def validate_interpretation(raw, state, day, request_text=''):
+def validate_interpretation(raw, state, day, request_text='', *, replay=False):
     raw=compose_class_hour_steps(raw,state,day,request_text)
     try:
         parsed = Interpretation.model_validate(raw)
@@ -360,7 +368,7 @@ def validate_interpretation(raw, state, day, request_text=''):
     for lesson in lessons.values():
         for source in lesson.get('classHour',{}).get('sources',[]):sources[source['id']]=source
     saved_cancels={r['lessonId'] for r in state.get('assistantConditions',{}).get(day,[]) if r['type']=='cancel_lesson'}
-    cancelled_lessons={l['id']:l for l in base_for_day(state,day) if l['id'] in saved_cancels}
+    cancelled_lessons={l['id']:l for l in base_for_day(state,day) if replay or l['id'] in saved_cancels}
     permits={a.lessonId for a in parsed.actions if isinstance(a,Eighth)}
     existing_permits={r['lessonId'] for r in state.get('assistantConditions',{}).get(day,[]) if r['type']=='allow_eighth'}
     if permits-existing_permits and not re.search(r'восьм|(?<!\d)8\s*(?:-?[ймго]+\s*)?урок',request_text.lower()):
@@ -368,6 +376,8 @@ def validate_interpretation(raw, state, day, request_text=''):
     unique = set()
     labels = []
     for action in parsed.actions:
+        if isinstance(action, Placement):
+            raise AssistantError('Ручное назначение кабинета доступно в таблице расписания.')
         row = action.model_dump()
         encoded = json.dumps(row, sort_keys=True)
         if encoded in unique:
@@ -530,17 +540,28 @@ def validate_interpretation(raw, state, day, request_text=''):
     return parsed.model_dump(), labels
 
 
+def apply_room_closures(state,weekday,actions):
+    rooms={r['id']:r for r in state['rooms']}
+    for row in actions:
+        if row['type']!='room_unavailable':continue
+        room=rooms[row['roomId']]
+        unavailable={tuple(cell) for cell in room.get('unavailable',[]) if not isinstance(cell,dict)}
+        unavailable.update((cell['day'],cell['period']) for cell in room.get('unavailable',[]) if isinstance(cell,dict))
+        unavailable.update((weekday,p) for p in range(row['first'],row['last']+1))
+        room['unavailable']=[list(cell) for cell in sorted(unavailable)]
+
+
 def prepared_state(state, day, actions):
     work = deepcopy(state)
     work.setdefault('assistantConditions',{})[day]=deepcopy(actions)
     weekday = parse_date(day).weekday()
+    apply_room_closures(work,weekday,actions)
     for row in actions:
         if row['type'] == 'teacher_absence':
-            work['absences'].append({'id': uuid.uuid4().hex, 'teacherId': row['teacherId'], 'start': day, 'end': day,
-                                     'first': row['first'], 'last': row['last'], 'reason': 'Условия помощника'})
-        if row['type'] == 'room_unavailable':
-            room = next(r for r in work['rooms'] if r['id'] == row['roomId'])
-            room['unavailable'] = list(room.get('unavailable', [])) + [[weekday, p] for p in range(row['first'], row['last'] + 1)]
+            if not any(a['teacherId']==row['teacherId'] and a['start']<=day<=a['end']
+                       and a.get('first',1)<=row['first'] and a.get('last',8)>=row['last'] for a in work['absences']):
+                work['absences'].append({'id': uuid.uuid4().hex, 'teacherId': row['teacherId'], 'start': day, 'end': day,
+                                         'first': row['first'], 'last': row['last'], 'reason': 'Условия помощника'})
     cancelled = {r['lessonId'] for r in actions if r['type'] == 'cancel_lesson'}
     work['days'][day] = [deepcopy(l) for l in lessons_for_day(state, day) if l['id'] not in cancelled]
     from .class_hours import apply as apply_class_hours
@@ -618,52 +639,85 @@ def _schedule_key(result):
                          tuple((c,tuple(student_groups(l,c))) for c in sorted(l['classIds']))) for l in result['after']))
 
 
-def _variants(state, day, actions, limit=3):
+def _complete_result(state, day, actions, result, before):
+    from .model import gap_slots
+    from .day_preferences import score as pupil_score,late_count,gap_details
+    after=result['after']
+    result['before']=deepcopy(before)
+    result['changes']=diff_lessons(before,after)
+    explicit={r['lessonId'] for r in actions if r['type']=='cancel_lesson'}
+    already={l['id'] for l in result['cancelled']}
+    added=[deepcopy(l) for l in before if l['id'] in explicit-already]
+    result['cancelled'].extend(added)
+    stats=result['stats']
+    stats['cancelled']=len(result['cancelled'])
+    stats['lostHours']+=sum(len(l['teacherIds']) for l in added)
+    stats['moved']=changed_assignments(before,after)
+    stats['classHours']=sum(bool(l.get('classHour')) for l in after)
+    stats['classHourClasses']=sum(len(l['classIds']) for l in after if l.get('classHour'))
+    cancelled_hours=[l for l in result['cancelled'] if l.get('classHour')]
+    stats['classHoursCancelled']=sum(len(l['classIds']) for l in cancelled_hours)
+    names={c['id']:c['name'] for c in state['classes']}
+    for lesson in cancelled_hours:
+        label='Классный час '+', '.join(names[c] for c in lesson['classIds'])+' отменён.'
+        if label not in result['warnings']:result['warnings'].append(label)
+    if any(l.get('classHour') and len(l['classIds'])>1 for l in after):
+        result['search']={**result.get('search',{}),'primaryProven':False}
+    weekday=parse_date(day).weekday()
+    stats['studentPreference']=pupil_score(state,after,weekday,actions)
+    stats['youngerLate']=late_count(state,after,weekday,actions)
+    stats['classGapDetails']=gap_details(state,after)
+    stats['classGapsAfter']=sum(len(gap_slots([l['period'] for l in after if c in l['classIds'] and g in student_groups(l,c)]))
+                                 for c in names for g in (0,1))
+    stats['joined']=sum(bool(l.get('joint') or l.get('technologyJoint')) and
+                        not any(b['id']==l['id'] and b.get('joint')==l.get('joint') and b.get('technologyJoint')==l.get('technologyJoint') for b in before)
+                        for l in after)
+    result.update(status='ok' if result['changes'] else 'unchanged',actions=deepcopy(actions),
+                  inputFingerprint=search_fingerprint(state,day,actions))
+    return result
+
+
+def _move_limit(moved):
+    return moved+max(2,min(5,(moved+4)//5))
+
+
+def comparable(results, limit=3):
+    ranked=sorted(results,key=lambda r:(quality_key(r['stats']),_schedule_key(r)))
+    if not ranked:return ranked
+    best=quality_key(ranked[0]['stats'])
+    return [r for r in ranked if quality_key(r['stats'])[:3]==best[:3]
+            and r['stats']['moved']<=_move_limit(best[3])][:limit]
+
+
+def _variants(state, day, actions, limit=3, *, allow_drop=False):
     from .repair_constraints import solve_day
     from .engine import repair_day
+    from .solver_process import DaySolverUnavailable
     state=canonical_state(state);actions=canonical_actions(actions)
     work = canonical_state(prepared_state(state, day, actions),clone=False)
     before = lessons_for_day(state, day)
+    protected={row['lessonId'] for row in actions if row['type']=='place_lesson' and row.get('roomIds') is not None}
     found = []
     seen = set()
 
     def accept(result):
         if not result or result['status'] not in ('ok', 'unchanged'):
             return False
-        fingerprint = tuple(sorted((l['id'], l['period'], tuple(l['teacherIds']), tuple(l['roomIds']),tuple((c,tuple(student_groups(l,c))) for c in sorted(l['classIds']))) for l in result['after']))
+        from .room_policy import improve_assignments
+        improve_assignments(work,day,before,result['after'],protected)
+        fingerprint = _schedule_key(result)
         if fingerprint in seen:
             return False
-        result['before'] = deepcopy(before)
-        result['changes'] = diff_lessons(before, result['after'])
-        explicit = {r['lessonId'] for r in actions if r['type'] == 'cancel_lesson'}
-        result['cancelled'] += [deepcopy(l) for l in before if l['id'] in explicit]
-        result['stats']['cancelled'] = len(result['cancelled'])
-        result['stats']['lostHours'] += sum(len(l['teacherIds']) for l in before if l['id'] in explicit)
-        result['stats']['moved']=changed_assignments(before,result['after'])
-        result['stats']['classHours']=sum(bool(l.get('classHour')) for l in result['after'])
-        result['stats']['classHourClasses']=sum(len(l['classIds']) for l in result['after'] if l.get('classHour'))
-        cancelled_hours=[l for l in result['cancelled'] if l.get('classHour')]
-        result['stats']['classHoursCancelled']=sum(len(l['classIds']) for l in cancelled_hours)
-        for lesson in cancelled_hours:
-            names={c['id']:c['name'] for c in state['classes']}
-            warning='Классный час '+', '.join(names[c] for c in lesson['classIds'])+f" отменён: классный руководитель недоступен {lesson['period']}-м уроком."
-            if warning not in result['warnings']:result['warnings'].append(warning)
-        if any(l.get('classHour') and len(l['classIds'])>1 for l in result['after']):
-            result['search']={**result.get('search',{}),'primaryProven':False}
-        from .day_preferences import score as pupil_score,late_count,gap_details
-        result['stats']['studentPreference']=pupil_score(state,result['after'],parse_date(day).weekday(),actions)
-        result['stats']['youngerLate']=late_count(state,result['after'],parse_date(day).weekday(),actions)
-        result['stats']['classGapDetails']=gap_details(state,result['after'])
-        result['stats']['joined']=sum(bool(l.get('joint') or l.get('technologyJoint')) and not any(b['id']==l['id'] and b.get('joint')==l.get('joint') and b.get('technologyJoint')==l.get('technologyJoint') for b in before) for l in result['after'])
-        result['status'] = 'ok' if result['changes'] else 'unchanged'
+        _complete_result(state,day,actions,result,before)
         if condition_problems(state, day, actions, result):
             return False
-        result['actions']=deepcopy(actions)
         seen.add(fingerprint)
-        result['inputFingerprint']=search_fingerprint(state,day,actions)
         found.append(result)
         return True
 
+    if allow_drop:
+        accept(solve_day(work,day,baseline=before,conditions=actions,allow_room_changes=True,_seconds=2.5,_allow_drop=True))
+        return found
     # A complete main optimization is mandatory even if greedy already found
     # three candidates. Candidate count must never stop quality improvement.
     for index in range(4):
@@ -672,7 +726,12 @@ def _variants(state, day, actions, limit=3):
         best=min(found,key=lambda r:(quality_key(r['stats']),_schedule_key(r)))
         best['search']={'deterministic':True,'primaryProven':True,'scope':'all-rooms','certificate':'zero-changes'}
         return [best]
-    main=solve_day(work,day,variant=0,baseline=before,conditions=actions)
+    seed=min(found,key=lambda r:(quality_key(r['stats']),_schedule_key(r))) if found else None
+    try:main=solve_day(work,day,variant=0,baseline=before,conditions=actions,
+                       hint=seed['after'] if seed else None)
+    except DaySolverUnavailable:
+        if found:return comparable(found,limit)
+        raise
     primary_bound=None;main_final_bound=None;proof=None
     if main:
         if main.get('search',{}).get('primaryProven') and main['search']['scope']=='all-rooms':
@@ -682,10 +741,15 @@ def _variants(state, day, actions, limit=3):
             main_final_bound=quality_key(main['stats'])[:4]
             proof=deepcopy(main['search'])
     for index in range(1,limit):
-        ordered=sorted(found,key=lambda r:(quality_key(r['stats']),_schedule_key(r)))
-        if main_final_bound and sum(quality_key(r['stats'])[:4]==main_final_bound for r in ordered)>=limit:break
-        result=solve_day(work,day,variant=index,baseline=before,hint=ordered[0]['after'] if ordered else None,
-                         excluded=[r['after'] for r in ordered],conditions=actions,_primary_bound=primary_bound)
+        ordered=comparable(found,limit)
+        if not ordered or len(ordered)>=limit:break
+        best=ordered[0]['stats']
+        limits={k:best[k] for k in ('classGapsAfter','lostHours','youngerLate','moved')}
+        limits['moved']=_move_limit(limits['moved'])
+        try:
+            result=solve_day(work,day,variant=index,baseline=before,hint=ordered[0]['after'],
+                             excluded=[r['after'] for r in found],conditions=actions,_limits=limits)
+        except DaySolverUnavailable:break
         if result is None:break
         accept(result)
     if main_final_bound is not None:
@@ -696,21 +760,93 @@ def _variants(state, day, actions, limit=3):
                 # An independently valid candidate takes precedence over an
                 # inconsistent certificate; never mislabel it as proven.
                 result['search']={'deterministic':True,'primaryProven':False,'scope':'all-rooms'}
-    return sorted(found,key=lambda r:(quality_key(r['stats']),_schedule_key(r)))[:limit]
+    return comparable(found,limit)
+
+
+def _optional_label(state, action, before):
+    ix=indexes(state)
+    kind=action['type']
+    if kind in ('class_day','group_day'):
+        cls=ix['classes'][action['classId']]
+        name=cls['name']
+        if kind=='group_day':name+=', '+cls['groupNames'][action['groupIndex']]
+        return f"{name} начинает с {action['first']}-го урока и заканчивает до {action['last']}-го включительно"
+    if kind=='class_hour':
+        return f"Классный час у {ix['classes'][action['classId']]['name']} на {action.get('period') or 1}-м уроке"
+    if kind in ('join_lessons','join_technology'):
+        return f"Совместное занятие у {ix['teachers'][action['teacherId']]['name']} на {action['period']}-м уроке"
+    lesson=next((l for l in before if l['id']==action.get('lessonId')),None)
+    if lesson:
+        names=', '.join(ix['classes'][c]['name'] for c in lesson['classIds'])
+        return f"{names}, {ix['subjects'][lesson['subjectId']]['name']} на {action['period']}-м уроке"
+    return f"Закрепление на {action['period']}-м уроке"
+
+
+def _partial_result(state,day,actions,solver_available):
+    from .reserve_schedule import reserve
+    from .solver_process import DaySolverUnavailable
+    soft={'class_day','group_day','pin_lesson','class_hour','join_lessons','join_technology'}
+    hard=[r for r in actions if r['type'] not in soft]
+    wishes=[r for r in actions if r['type'] in soft]
+    before=lessons_for_day(state,day)
+    candidates=[]
+    if solver_available:
+        try:candidates=_variants(state,day,hard,limit=1,allow_drop=True)
+        except DaySolverUnavailable:pass
+    if not candidates:
+        result=reserve(prepared_state(state,day,hard),day)
+        removed={l['id'] for l in result['cancelled']}
+        hard.extend({'type':'cancel_lesson','lessonId':l['id']} for l in before
+                    if l.get('classHour') and l['id'] in removed)
+        candidates=[_complete_result(state,day,hard,result,before)]
+    for result in candidates:
+        active=list(result['actions'])
+        unfulfilled=[]
+        for action in wishes:
+            try:valid=not condition_problems(state,day,active+[action],result)
+            except AssistantError:valid=False
+            if valid:active.append(action)
+            else:unfulfilled.append(_optional_label(state,action,before))
+        result['actions']=canonical_actions(active)
+        result['unfulfilled']=list(dict.fromkeys(unfulfilled))
+    return [result for result in candidates if not condition_problems(state,day,result['actions'],result)]
 
 
 def variants(state,day,actions):
+    from .solver_process import DaySolverUnavailable
+    actions=canonical_actions(actions)
     key=search_fingerprint(state,day,actions)
     cached=_variant_cache.get(key)
     if cached is not None and all(not condition_problems(state,day,row.get('actions',actions),row) for row in cached):return cached
     strict=[r for r in actions if r['type']!='allow_class_gaps']
-    results=_calculate_variants(state,day,strict)
-    if not results:
-        fallback=strict+[{'type':'allow_class_gaps'}]
-        results=_calculate_variants(state,day,fallback)
-        for result in results:
-            result['warnings'].insert(0,'Резервный вариант: по всем условиям без окон решение не найдено. Проверьте выделенные окна перед сохранением.')
-            result['title']='Резервный вариант с окнами'
+    fallback=strict+[{'type':'allow_class_gaps'}]
+    manual=any(r['type']=='place_lesson' for r in strict)
+    worker_ready=True
+    for options in (strict,fallback):
+        try:results=_calculate_variants(state,day,options)
+        except DaySolverUnavailable:
+            worker_ready=False
+            break
+        except AssistantError:
+            if manual:raise
+            break
+        if results:
+            if options is fallback:
+                for result in results:
+                    result['title']='Резервный вариант с окнами'
+                    result['warnings'].insert(0,'Резервный вариант с окнами. Проверьте их перед применением.')
+            _variant_cache[key]=results
+            return results
+    if manual:return []
+    results=[]
+    if worker_ready:
+        try:results=_variants(state,day,fallback,limit=1,allow_drop=True)
+        except DaySolverUnavailable:worker_ready=False
+        except AssistantError:pass
+    if not results:results=_partial_result(state,day,fallback,worker_ready)
+    for result in results:
+        result['title']='Резервный вариант'
+        result['warnings'].insert(0,'Резервный вариант. Проверьте отмены, окна и условия перед применением.')
     if results:_variant_cache[key]=results
     return results
 
@@ -731,10 +867,10 @@ def _calculate_variants(state,day,actions):
     for result in sorted(found,key=lambda r:(*quality_key(r['stats']),r['stats'].get('joined',0))):
         key=tuple(sorted((l['id'],l['period'],tuple(l['teacherIds']),tuple(l['roomIds']),tuple((c,tuple(student_groups(l,c))) for c in sorted(l['classIds']))) for l in result['after']))
         unique.setdefault(key,result)
-    return list(unique.values())[:3]
+    return comparable(unique.values())
 
 
-def commit(state, day, actions, result):
+def commit(state, day, actions, result, *, reason='Перестановки по условиям помощника', save_version=False):
     errors = condition_problems(state, day, actions, result)
     if errors:
         raise AssistantError('Вариант не прошёл проверку: ' + ' '.join(errors[:3]))
@@ -744,14 +880,15 @@ def commit(state, day, actions, result):
     # Persist absences, not temporary changes to weekly room availability.
     for row in actions:
         if row['type'] == 'teacher_absence':
-            if any(a['teacherId'] == row['teacherId'] and a['start'] == day and a['end'] == day and
-                   a.get('first', 1) == row['first'] and a.get('last', 8) == row['last'] for a in state['absences']):
+            if any(a['teacherId'] == row['teacherId'] and a['start'] <= day <= a['end'] and
+                   a.get('first', 1) <= row['first'] and a.get('last', 8) >= row['last'] for a in state['absences']):
                 continue
             state['absences'].append({'id': uuid.uuid4().hex, 'teacherId': row['teacherId'], 'start': day, 'end': day,
                                      'first': row['first'], 'last': row['last'], 'reason': 'Условия помощника'})
     state.setdefault('assistantConditions',{})[day]=deepcopy(actions)
-    apply_repair(state,deepcopy(result),'Перестановки по условиям помощника')
+    apply_repair(state,deepcopy(result),reason)
     state.setdefault('dayNotices',{})[day]=[text for text in result.get('warnings',[]) if text.startswith('Классный час')]
+    state['dayNotices'][day].extend('Требует проверки: '+text for text in result.get('unfulfilled',[]))
     # Pins and date-specific conditions stay visible and can be used again.
     state.setdefault('assistantConditions', {})[day] = deepcopy(actions)
     if day not in state['days']:
@@ -763,5 +900,9 @@ def commit(state, day, actions, result):
                 lesson['assistantPinned'] = True
             lesson['locked'] = True
     known={l['id'] for l in base_for_day(state,day)+state['days'][day]}
-    state['assistantConditions'][day]=[r for r in actions if r['type']!='cancel_lesson' or r['lessonId'] in known]
+    state['assistantConditions'][day]=[r for r in actions if r['type']!='place_lesson' and (r['type']!='cancel_lesson' or r['lessonId'] in known)]
+    if save_version and (result['changes'] or any(r['type']=='teacher_absence' for r in actions)):
+        from datetime import datetime
+        from .day_variants import capture,save
+        save(state,day,capture(state,day),'После подбора '+datetime.now().strftime('%H:%M'),rename=False)
     return state

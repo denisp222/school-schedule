@@ -12,13 +12,20 @@ def problems(state,day,actions,after):
                 periods=[l['period'] for l in after if row['classId'] in l['classIds'] and group in student_groups(l,row['classId'])]
                 if not periods or min(periods)!=row['first'] or max(periods)>row['last']:
                     errors.append('Не выполнено время начала или окончания занятий класса.')
-        if row['type']=='pin_lesson':
+        if row['type'] in ('pin_lesson', 'place_lesson'):
             if sources is None:sources={l['id']:l for l in lessons_for_day(state,day)}
             source=sources.get(row['lessonId'])
             parts=[l for l in after if l['id']==row['lessonId'] or l.get('splitFrom')==row['lessonId']]
             if source is None:errors.append('Закреплённый урок больше не найден. Снимите условия дня и задайте их заново.')
             elif not parts or any(l['period']!=row['period'] for l in parts) or {t for l in parts for t in l['teacherIds']}!=set(source['teacherIds']):
                 errors.append('Не выполнено закрепление урока.')
+            elif row['type']=='place_lesson' and row.get('roomIds') is not None:
+                if len(parts)==1:
+                    assigned=parts[0]['roomIds']
+                else:
+                    assigned=[r for t in source['teacherIds'] for l in parts if l['teacherIds']==[t] for r in l['roomIds']]
+                if assigned!=row['roomIds']:
+                    errors.append('Не выполнено назначение выбранного кабинета.')
         if row['type']=='cancel_lesson' and any(l['id']==row['lessonId'] or l.get('splitFrom')==row['lessonId'] for l in after):
             errors.append('Не выполнена отмена урока.')
     return list(dict.fromkeys(errors))

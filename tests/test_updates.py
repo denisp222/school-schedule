@@ -133,7 +133,17 @@ def test_helper_waits_checks_hash_and_quotes_paths(signed):
     script=updates.install_script("C:/O'Brien/update.exe",'C:/School app',123,payload['asset']['sha256'])
     assert "O''Brien" in script and 'Wait-Process -Id 123' in script
     assert 'Get-FileHash' in script and '/UPDATE=1' in script and '/DIR=' in script
+    assert 'window-ready.json' in script and '--after-update' in script
     assert 'Remove-Item' not in script and 'http' not in script
+
+
+def test_ready_marker_identifies_the_opened_desktop_process(tmp_path):
+    import os
+    from datetime import datetime
+    updates.mark_window_ready(tmp_path,'2.26.0')
+    ready=json.loads((tmp_path/'window-ready.json').read_text(encoding='utf-8'))
+    assert ready['pid']==os.getpid() and ready['version']=='2.26.0'
+    assert datetime.fromisoformat(ready['opened']).tzinfo is not None
 
 
 def test_offline_check_is_bounded_and_opens_installed_version(signed,tmp_path,monkeypatch):

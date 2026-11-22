@@ -339,6 +339,7 @@ def normalize_state(raw: dict) -> dict:
         state.setdefault(key, [])
     for key in ("days", "dayBases"):
         state.setdefault(key, {})
+    state.setdefault('dayVariants', {})
     from .commitments import normalize as normalize_commitments
     normalize_commitments(state)
     for key in ("absences", "students", "journal", "importNotes", "loadedDays", "sourceLessons"):
@@ -465,6 +466,8 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
     validate_commitments(state)
     from .room_policy import validate as validate_room_policy
     validate_room_policy(state)
+    from .day_variants import validate as validate_day_variants
+    validate_day_variants(state)
     notices=state.get('dayNotices',{})
     if (not isinstance(notices,dict) or len(notices)>1000 or
             any(not isinstance(rows,list) or len(rows)>40 or any(not isinstance(text,str) or len(text)>1000 for text in rows) for rows in notices.values())):

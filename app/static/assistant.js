@@ -2,7 +2,7 @@
 
 S.ai = { status: null, loading: false, date: '', messages: [], text: '', response: null,
   preview:null,selected:0,pending:'',error:'',connectionMessage:'',connectionError:'',providerChoice:'',
-  threadId:null,history:null,historyOpen:false,historyLoading:false };
+  threadId:null,replay:null,history:null,historyOpen:false,historyLoading:false };
 
 function assistantProvider() { return S.ai.providerChoice || S.ai.status?.provider || 'openrouter'; }
 
@@ -96,6 +96,11 @@ function renderAssistant() {
         ${response.draftId && !a.preview ? `<button class="btn primary" type="button" data-action="assistant-preview" ${a.pending ? 'disabled' : ''}>Условия верны, подобрать варианты</button>` : ''}
       </section>` : ''}
       ${assistantPreview()}
+      ${a.replay && !response ? `<section class="assistant-understood">
+        <h2>Условия из диалога</h2>
+        ${a.replay.labels?.length ? `<details><summary>Посмотреть условия</summary><ul>${a.replay.labels.map(label=>`<li>${esc(label)}</li>`).join('')}</ul></details>` : ''}
+        <button class="btn primary" type="button" data-action="assistant-replay" ${a.pending?'disabled':''}>Повторить подбор</button>
+      </section>` : ''}
       <form id="assistant-request-form" class="assistant-composer">
         <label class="field"><span class="sr-only">${a.messages.length ? 'Уточнение или исправление условий' : 'Ваше сообщение'}</span>
           <textarea class="input assistant-input" id="assistant-message" name="message" rows="4" maxlength="4000" placeholder="Например: покажи нагрузку учителя; как сохранить копию; учитель может работать только по пятницам; учитель отсутствует на втором уроке." ${a.pending ? 'disabled' : ''}>${esc(a.text)}</textarea>
@@ -118,7 +123,7 @@ function renderAssistant() {
 
 function assistantReset() {
   if(typeof stopVoiceCapture==='function' && isVoiceBusy())stopVoiceCapture(false);
-  Object.assign(S.ai,{messages:[],text:'',response:null,preview:null,selected:0,error:'',threadId:null,programContext:false});
+  Object.assign(S.ai,{messages:[],text:'',response:null,replay:null,preview:null,selected:0,error:'',threadId:null,programContext:false});
   localStorage.removeItem('assistant-draft');
 }
 
@@ -145,6 +150,7 @@ async function sendAssistant(form) {
     const result=await api('/assistant/interpret',{revision:S.revision,date:a.date,message,threadId:a.threadId,programContext:!!(a.response?.program||a.programContext),
       history:a.messages.filter(m=>!m.error && !m.notice).slice(-10).map(({role,content})=>({role,content}))});
     a.threadId=result.threadId;a.programContext=!!result.program;
+    if(result.draftId)a.replay={id:result.turnId,labels:result.labels};
     a.messages.push({role: 'user', content: message});
     const content = JSON.stringify({ date: result.date, reply: result.reply, actions: result.actions,
       questions: result.questions, unsupported: result.unsupported });
@@ -186,6 +192,8 @@ async function openAssistantThread(id) {
     if(turn.response) {const r=turn.response;a.messages.push({role:'assistant',content:JSON.stringify({date:r.date,reply:r.reply,actions:r.actions,questions:r.questions,unsupported:r.unsupported}),text:r.reply+(turn.status==='applied'?'\nВариант сохранён.':'')});}
     else a.messages.push({role:'assistant',content:turn.error || 'Запрос не завершён.',error:true,text:turn.error || 'Запрос не завершён.'});
   }
+  const last=[...thread.turns].reverse().find(({response:r})=>r?.actions?.length && !r.questions?.length && !r.unsupported?.length);
+  if(last)a.replay={id:last.id,labels:last.response.labels};
   render();
 }
 
@@ -200,13 +208,15 @@ function previewDay() {
 }
 
 async function applyAssistantVariant() {
-  const technology=['technology','class-hour'].includes(S.preview?.kind), date=S.preview?.date || S.ai.date;
+  const preview=S.preview,selected=previewSelected(),date=preview.date;
   return assistantWork('Сохраняем выбранный вариант…',async()=>{
     const a=S.ai;
-    const result=await api('/assistant/apply',{revision:a.preview.revision,previewId:assistantSelected().previewId});
+    const result=preview.kind==='saved-day'
+      ? await api(`/day/${date}/versions/apply`,{revision:preview.revision,id:selected.savedId})
+      : await api('/assistant/apply',{revision:preview.revision,previewId:selected.previewId});
     S.data=result.state;S.revision=result.revision;S.day=result.day;S.date=date;S.preview=null;
     a.preview=null;a.error='';
-    if(!technology) {
+    if(preview.kind==='assistant') {
       a.response=null;a.text='';localStorage.removeItem('assistant-draft');
       a.messages.push({role:'assistant',notice:true,text:'Вариант сохранён.',content:'Вариант сохранён.'});
     }
@@ -223,31 +233,55 @@ document.addEventListener('click',async e=>{
     if(kind==='assistant') {S.page='assistant';history.replaceState(null,'','#assistant');}
     if(kind==='technology')S.ai.preview=null;
     if(kind==='class-hour') {S.ai.preview=null;S.page='extras';history.replaceState(null,'','#extras');}
-    render();if(kind==='technology')openTechnology();return;
+    render();if(kind==='technology')openTechnology();
+    if(kind==='saved-day')await openDayVersions();
+    return;
   }
+  if(node.dataset.action==='preview-save-version') {openSavePreviewVersion();return;}
   if(node.dataset.action==='preview-apply') {
     const selected=previewSelected();
-    if(['assistant','technology','class-hour'].includes(S.preview.kind)) {S.ai.selected=selected.id;await applyAssistantVariant();}
-    else {S.selectedVariant=selected.id;node.dataset.variant=selected.id;await applyRepair(node);}
+    if(S.preview.kind==='repair') {S.selectedVariant=selected.id;node.dataset.variant=selected.id;await applyRepair(node);}
+    else {S.ai.selected=selected.id;await applyAssistantVariant();}
   }
 });
 
-async function showSchedulePreview(kind,date,variants,selected=0) {
+async function showSchedulePreview(kind,date,variants,selected=0,revision=S.revision,view='classes') {
   S.date=date;await loadDay();closeModal();closeSheet();
-  S.preview={kind,date,variants,selected};S.page='day';S.view='classes';S.changesOnly=false;S.query='';
+  S.preview={kind,date,variants,selected,revision};S.page='day';S.view=view;S.changesOnly=false;S.query='';
   history.replaceState(null,'','#day');render();$('#main').scrollTop=0;
 }
 
 function schedulePreviewBar() {
   const p=S.preview,v=previewSelected();if(!p || !v)return '';
   const main=v.id===p.variants[0].id;
-  const proof=main?`<p class="assistant-note">${v.search?.primaryProven && v.search?.scope==='all-rooms'?'Лучший вариант по заданным условиям.':'Лучший найденный вариант.'}</p>`:'';
+  const saved=p.kind==='saved-day';
+  const manual=p.kind==='manual';
+  const proof=main && p.variants.length>1 && !manual && !v.unfulfilled?.length
+    ? `<p class="assistant-note">${v.search?.primaryProven && v.search?.scope==='all-rooms'?'Лучший вариант по заданным условиям.':'Основной вариант в подборе.'}</p>`:'';
   const classHours=v.stats?.classHours?`<p class="assistant-note">Классных часов: ${v.stats.classHours}${v.stats.classHourClasses>v.stats.classHours?' · классов: '+v.stats.classHourClasses:''}</p>`:'';
   const alerts=(v.warnings || []).filter(text=>text.startsWith('Классный час') || text.startsWith('Резервный вариант'));
   if(v.stats?.classGapDetails?.length)alerts.push('Окна: '+v.stats.classGapDetails.map(row=>`${row.className} — ${row.periods.join(', ')} ур.`).join('; '));
   if(v.stats?.youngerLate)alerts.push('В этом варианте у 5–6 классов остаются уроки позже обычного окончания дня.');
   const warnings=alerts.map(text=>notice(text,'warn')).join('');
-  return `<section class="schedule-preview-bar" aria-label="Предпросмотр расписания"><div class="preview-heading"><h2>Выберите вариант</h2><span>Изменения ещё не применены</span></div>${proof}${classHours}${warnings}<div class="variant-strip">${p.variants.map((row,i)=>`<button class="variant-card ${row.id===v.id?'active':''}" data-action="preview-variant" data-id="${esc(row.id)}" aria-pressed="${row.id===v.id}"><span class="v-title">${i===0?'Основной вариант':'Вариант '+(i+1)}</span><span>${row.stats?.moved || 0} переставлено · ${row.stats?.cancelled || 0} отменено${row.stats?.groupLosses ? ' · занятий подгрупп отменено: '+row.stats.groupLosses : ''}${row.stats?.classGapsAfter?' · есть окна':''}${row.stats?.youngerLate?' · есть поздние уроки у 5–6':''}${row.stats?.joined?' · совместных: '+row.stats.joined:''}</span></button>`).join('')}</div><div class="assistant-actions"><button class="btn primary" data-action="preview-apply" ${S.ai.pending?'disabled':''}>${v.stats?.classGapsAfter?'Сохранить вариант с окнами':'Сохранить этот вариант'}</button><button class="btn ghost" data-action="preview-cancel">${p.kind==='assistant'?'Вернуться к просьбе':p.kind==='technology'?'Вернуться к условиям':'Отменить просмотр'}</button></div></section>`;
+  const title=saved?v.title:manual?'Ручная перестановка':p.variants.length>1?'Выберите вариант':v.title||'Вариант расписания';
+  const changes=v.changes || v.day?.changes || [];
+  const unmet=v.unfulfilled?.length
+    ? `<div class="notice warn"><div><strong>Условия, которые требуют проверки</strong><ul>${v.unfulfilled.map(text=>`<li>${esc(text)}</li>`).join('')}</ul></div></div>`:'';
+  const disabled=S.ai.pending?'disabled':'';
+  const applyLabel=v.stats?.classGapDetails?.length?'Применить вариант с окнами':manual?'Применить перестановку':'Применить вариант';
+  return `<section class="schedule-preview-bar" aria-label="Предпросмотр расписания">
+    <div class="preview-heading"><h2>${esc(title)}</h2><span>Предпросмотр</span></div>
+    ${proof}${classHours}${warnings}${unmet}
+    ${p.variants.length>1?`<div class="variant-strip">${p.variants.map((row,i)=>`<button type="button" class="variant-card ${row.id===v.id?'active':''}" data-action="preview-variant" data-id="${esc(row.id)}" aria-pressed="${row.id===v.id}">
+      <span class="v-title">${i===0?'Основной вариант':'Вариант '+(i+1)}</span><span>${row.stats?.moved || 0} переставлено · ${row.stats?.cancelled || 0} отменено${row.stats?.groupLosses ? ' · занятий подгрупп отменено: '+row.stats.groupLosses : ''}${row.stats?.classGapsAfter?' · есть окна':''}${row.stats?.joined?' · совместных: '+row.stats.joined:''}</span></button>`).join('')}</div>`:''}
+    ${changes.length?`<details class="preview-diff" ${manual?'open':''}><summary>Изменения (${changes.length})</summary><div class="change-list">${changes.map(changeRow).join('')}</div></details>`
+    :'<p class="assistant-note">Занятия остаются на своих местах.</p>'}
+    <div class="assistant-actions">
+      <button type="button" class="btn primary" data-action="preview-apply" ${disabled}>${applyLabel}</button>
+      ${saved?'':button('Сохранить как запасной','preview-save-version','', '',disabled)}
+      <button type="button" class="btn ghost" data-action="preview-cancel">${p.kind==='assistant'?'Вернуться к диалогу':p.kind==='technology'?'Вернуться к условиям':saved?'К списку вариантов':'Закрыть предпросмотр'}</button>
+    </div>
+  </section>`;
 }
 document.addEventListener('change', e => {
   if(e.target.id==='assistant-provider') {
@@ -323,10 +357,15 @@ document.addEventListener('click', async e => {
     a.status = await api('/assistant/settings', {removeKey: true, model: a.status.model});
     a.connectionMessage = 'Ключ удалён с этого компьютера.';
   }, true);
-  if (action === 'assistant-preview') return assistantWork('Алгоритм подбирает варианты без окон…', async () => {
+  if (action === 'assistant-replay') return assistantWork('Подбираем расписание по условиям из диалога…', async () => {
+    a.preview=await api('/assistant/replay',{revision:S.revision,threadId:a.threadId,turnId:a.replay.id});
+    a.selected=a.preview.variants[0]?.id ?? 0;
+    if(a.preview.variants.length)await showSchedulePreview('assistant',a.preview.date,a.preview.variants,a.selected,a.preview.revision);
+  });
+  if (action === 'assistant-preview') return assistantWork('Подбираем расписание…', async () => {
     a.preview = await api('/assistant/preview', {revision: a.response.revision, draftId: a.response.draftId});
     a.selected = a.preview.variants[0]?.id ?? 0;
-    if(a.preview.variants.length)await showSchedulePreview('assistant',a.date,a.preview.variants,a.selected);
+    if(a.preview.variants.length)await showSchedulePreview('assistant',a.date,a.preview.variants,a.selected,a.preview.revision);
   });
   if (action === 'assistant-apply') return assistantWork('Сохраняем выбранный вариант…', async () => {
     const result = await api('/assistant/apply', {revision: a.preview.revision, previewId: assistantSelected().previewId});
