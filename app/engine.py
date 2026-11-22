@@ -64,7 +64,8 @@ def repair_problems(state, result):
     original_week=[l for rows in week.values() for l in rows]
     actual_week=[l for d,rows in week.items() for l in changed.get(d,rows)]
     originals={l['id']:l for l in original_week}
-    revised_classes={r['classId'] for r in state.get('assistantConditions',{}).get(result['date'],[])
+    conditions=state.get('assistantConditions',{}).get(result['date'],[])
+    revised_classes={r['classId'] for r in conditions
                      if r['type']=='class_hour' and r.get('replaceLessonId')}
     restored_sources={s['id']:s for old in original_week if old.get('classHour') and revised_classes.intersection(old['classIds'])
                       for s in old['classHour']['sources']}
@@ -85,7 +86,7 @@ def repair_problems(state, result):
             # class; the other source then participates in the new pairing.
             old_sources=source['joint']['sources']
             replacing=any(r['type']=='join_lessons' and set(r['lessonIds']).intersection(source_ids(source))
-                          for r in state.get('assistantConditions',{}).get(result['date'],[]))
+                          for r in conditions)
             restored=next((s for s in old_sources if s['id']==lesson['id']),None)
             if replacing and restored:source=restored
         joint=False
@@ -102,13 +103,14 @@ def repair_problems(state, result):
             consumed={(r['lessonId'],r['groupIndex']) for r in source_refs(lesson)}
             if any(group_consumers[ref]-{lesson['id']} for ref in consumed):
                 errors.append('Объединённую группу нельзя одновременно оставить отдельным занятием.')
+        authorized_join=False
         if lesson.get('joint'):
             joint=not joint_problems(state,lesson)
             already=source and source.get('joint')==lesson['joint']
-            authorized=any(r['type']=='join_lessons' and set(r['lessonIds'])==set(source_ids(lesson))
-                           and r['teacherId']==lesson['teacherIds'][0] and r['period']==lesson['period']
-                           for r in state.get('assistantConditions',{}).get(result['date'],[]))
-            joint=joint and (already or authorized)
+            authorized_join=any(r['type']=='join_lessons' and set(r['lessonIds'])==set(source_ids(lesson))
+                                and lesson['teacherIds']==[r['teacherId']] and r['period']==lesson['period']
+                                and r.get('roomId')==lesson['joint'].get('roomId') for r in conditions)
+            joint=joint and (already or authorized_join)
             if not joint:errors.append('Объединение классов не было согласовано или нарушает исходные занятия.')
             if any(other['id'] in set(source_ids(lesson))-{lesson['id']} for other in actual_week):
                 errors.append('Объединённое занятие нельзя одновременно оставить отдельным уроком.')
@@ -117,6 +119,12 @@ def repair_problems(state, result):
         if lesson.get('eighthOn') and (not source or source.get('eighthOn')!=lesson['eighthOn']):
             if not any(r['type']=='allow_eighth' and r['lessonId']==lesson['id'] for r in state.get('assistantConditions',{}).get(lesson['eighthOn'],[])):
                 errors.append('Исключение для восьмого урока не было согласовано.')
+        rov_time=lesson.get('rovTime')
+        if rov_time and (not source or source.get('rovTime')!=rov_time):
+            pinned=any(r['type']=='pin_lesson' and r['lessonId']==lesson.get('splitFrom',lesson['id'])
+                       and r['period']==lesson['period'] for r in conditions)
+            if rov_time!={'date':result['date'],'period':lesson['period']} or not (authorized_join or pinned):
+                errors.append('Поздние «Разговоры о важном» на эту дату не были согласованы.')
         if source and source.get('locked') and (lesson['period'],lesson['day'])!=(source['period'],source['day']):
             errors.append('Закреплённое занятие нельзя переносить.')
     for key, after in changed.items():

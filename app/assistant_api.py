@@ -148,7 +148,7 @@ def interpret(body: dict):
                if not body.get('history') and not body.get('threadId') else None)
         if local is not None:raw,model=local,'Локальный разбор'
         else:raw,model=assistant.interpret(messages,expected_provider=status['provider'],expected_model=status['model'])
-        raw=ai_planner.ground_joint_refusal(raw,current['state'],day,body.get('message',''))
+        raw=ai_planner.ground_joint_refusal(raw,current['state'],day,body.get('message',''),body.get('history',[]))
         text='\n'.join(r['content'] for r in body.get('history',[]) if r.get('role')=='user')+'\n'+body.get('message','')
         draft,labels=ai_planner.validate_interpretation(raw,current['state'],day,text)
         from .search_policy import canonical_actions
@@ -178,7 +178,7 @@ def preview(body: dict):
     snapshot(body)
     if not results:
         return {'date': day, 'variants': [], 'revision': current['revision'],
-                'message': 'Вариант по всем условиям без окон пока не найден. Попробуйте изменить время прихода класса или закрепление урока. Расписание не изменено.'}
+                'message': 'Не найден вариант по всем условиям, включая резервный вариант с окнами. Проверьте время прихода классов, закреплённые уроки и доступность учителей и кабинетов.'}
     summaries = []
     for i, result in enumerate(results):
         actions=result.get('actions',draft['draft']['actions'])

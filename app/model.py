@@ -152,9 +152,16 @@ def diff_lessons(before: list[dict], after: list[dict]) -> list[dict]:
     return rows
 
 
-def must_be_first(subject: dict,lesson=None) -> bool:
-    """«Разговоры о важном» всегда стоят первым уроком."""
+def must_be_first(subject: dict) -> bool:
+    """First-period rule for the regular week."""
     return bool(subject.get('firstMonday',is_rov(subject)))
+
+
+def subject_time_allowed(subject, lesson, weekday, period, day=None):
+    if not must_be_first(subject) or (weekday, period) == (0, 1):
+        return True
+    return (weekday == 0 and day is not None and is_rov(subject)
+            and lesson.get('rovTime') == {'date': iso(day), 'period': period})
 
 
 def paired_subjects(state):
@@ -540,12 +547,14 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
         from pydantic import TypeAdapter,ValidationError
         from .ai_planner import Action
         adapter=TypeAdapter(list[Action])
-        lesson_ids={l['id'] for rows in [state['baseLessons'],*state.get('rotationWeeks',{}).values(),*state['days'].values(),*state['dayBases'].values()] for l in rows}
-        lesson_ids.update(s['id'] for rows in [*state['days'].values(),*state['dayBases'].values()]
-                          for lesson in rows for s in lesson.get('classHour',{}).get('sources',[]))
         for day,rows in conditions.items():
             try:
                 if parse_date(day).weekday()>4 or not isinstance(rows,list) or len(rows)>24:raise ValueError()
+                base_rows=base_for_day(state,day)
+                day_rows=state['days'].get(day,[])
+                lesson_ids={l['id'] for l in base_rows+day_rows}
+                lesson_ids.update(s['id'] for l in day_rows for key in ('classHour','joint')
+                                  for s in l.get(key,{}).get('sources',[]))
                 typed=adapter.validate_python(rows)
                 for item in typed:
                     if hasattr(item,'first') and item.first>item.last:raise ValueError()
@@ -555,7 +564,7 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
                     if hasattr(item,'replaceLessonId') and item.replaceLessonId is not None and item.replaceLessonId not in lesson_ids:raise ValueError()
                     if item.type in ('class_day','group_day') and item.first>7:
                         permit_ids={r['lessonId'] for r in rows if r.get('type')=='allow_eighth'}
-                        candidates=[l for lessons in [state['baseLessons'],*state['days'].values()] for l in lessons if item.classId in l['classIds']]
+                        candidates=[l for l in base_rows+day_rows if item.classId in l['classIds']]
                         if not any(l['id'] in permit_ids or l.get('eighthOn')==day or is_eighth_exception(state,l) and parse_date(day).weekday()==eighth_exception(state)['day'] for l in candidates):raise ValueError()
                     if item.type=='join_lessons' and any(i not in lesson_ids for i in item.lessonIds):raise ValueError()
                     if item.type=='allow_technology' and (len(item.classIds)!=len(set(item.classIds)) or any(c not in ids['classes'] for c in item.classIds)):
@@ -609,7 +618,7 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
         _require_refs(state, "rooms", plan.get("roomIds", []), ids["rooms"], plan.get("id", "?"))
         _require_refs(state, "subjects", [plan.get("subjectId")], ids["subjects"], plan.get("id", "?"))
 
-    for key, lessons in {**state["days"], **state["dayBases"]}.items():
+    for key, lessons in [*state["days"].items(), *state["dayBases"].items()]:
         try:
             weekday = parse_date(key).weekday()
         except Exception as exc:
@@ -622,9 +631,16 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
         for lesson in lessons:
             errors=class_hour_problems(state,lesson,key)
             if errors:raise StateError(errors[0])
+            if 'rovTime' in lesson:
+                subject=next(s for s in state['subjects'] if s['id']==lesson['subjectId'])
+                permit=lesson['rovTime']
+                if not (weekday==0 and is_rov(subject)
+                        and isinstance(permit,dict) and set(permit)=={'date','period'} and permit['date']==key
+                        and type(permit['period']) is int and 2<=permit['period']<=8):
+                    raise StateError('Исключение для «Разговоров о важном» должно относиться к уроку выбранной даты.')
         if any(l.get('eighthOn') and l['eighthOn']!=key or l.get('joint') and l['joint']['date']!=key or l.get('technologyJoint') and l['technologyJoint']['date']!=key for l in lessons):
             raise StateError('Совместный урок или исключение восьмого урока относится к другой дате.')
-    if any(l.get('eighthOn') or l.get('joint') or l.get('technologyJoint') for l in state['baseLessons']):
+    if any(l.get('eighthOn') or 'rovTime' in l or l.get('joint') or l.get('technologyJoint') for l in state['baseLessons']):
         raise StateError('Исключения и совместные уроки помощника сохраняются на выбранную дату, отдельно от базовой недели.')
     from .class_hours import SUBJECT_ID
     if any(l.get('classHour') or l.get('subjectId')==SUBJECT_ID for l in state['baseLessons']):
@@ -761,7 +777,7 @@ def slot_feasible(state,lesson,weekday,period,*,date=None,index=None,check_rooms
     if lesson.get('classHour') and (period!=lesson['period'] or date is not None and str(date)!=lesson['classHour']['date']):return False
     subject=ix['subjects'].get(lesson.get('subjectId'))
     if subject and subject.get('unavailable') and unavailable(subject,weekday,period):return False
-    if not subject or must_be_first(subject,lesson) and (weekday!=0 or period!=1):return False
+    if not subject or not subject_time_allowed(subject,lesson,weekday,period,date):return False
     key=date if date is not None else weekday
     for cid in lesson.get('classIds',[]):
         record=ix['classes'].get(cid)
@@ -837,11 +853,11 @@ def issues(state: dict, lessons: list[dict], day=None, *, gaps: bool = True) -> 
             from .technology import problems,warnings
             for text in problems(state,lesson,day):add('error','technology_joint',text,[lesson['id']])
             for text in warnings(state,lesson):add('warning','technology_capacity',text,[lesson['id']])
-        if subject and must_be_first(subject,lesson) and int(lesson["period"]) != 1:
-            add("error", "first_period",
-                f"{subject['name']}: должен стоять первым уроком.", [lesson["id"]])
-        if subject and must_be_first(subject) and lesson['day']!=0:
-            add('error','rov_day','«Разговоры о важном» проводятся только первым уроком понедельника.',[lesson['id']])
+        if subject and not subject_time_allowed(subject,lesson,lesson['day'],lesson['period'],day):
+            if lesson['day']!=0:
+                add('error','rov_day','«Разговоры о важном» проводятся по понедельникам.',[lesson['id']])
+            if lesson['period']!=1:
+                add('error','first_period',f"{subject['name']}: по умолчанию идёт первым уроком. Для другого времени на эту дату укажите номер урока помощнику.",[lesson['id']])
         for kind, field in (("teachers", "teacherIds"), ("classes", "classIds"), ("rooms", "roomIds")):
             for ident in lesson.get(field, []):
                 record = index[kind].get(ident)

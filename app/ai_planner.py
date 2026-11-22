@@ -1,6 +1,6 @@
 """Typed assistant commands and deterministic, independently checked previews."""
 from __future__ import annotations
-from .rules import is_technology, is_rov, surname_stem, surname_matches
+from .rules import is_technology, is_rov
 
 import json
 import re
@@ -14,7 +14,9 @@ from .ai_service import AssistantError
 from .engine import apply_repair, repair_problems
 from .model import changed_assignments
 from .search_policy import canonical_state,canonical_actions,fingerprint as search_fingerprint
-from .model import diff_lessons, indexes, lessons_for_day, parse_date, period_allowed,must_be_first,student_groups
+from .model import base_for_day, diff_lessons, indexes, lessons_for_day, must_be_first, parse_date, period_allowed, room_student_count, subject_time_allowed, student_groups
+from .joint_lessons import sources_for
+from .day_request import ground_reply, mentioned_entities, requests_rov_time, verified_actions
 from .day_preferences import quality_key
 from .previews import PreviewStore
 _variant_cache=PreviewStore(limit=12,ttl=900)
@@ -61,7 +63,7 @@ class Cancel(StrictModel):
 
 class Join(StrictModel):
     type: Literal['join_lessons']
-    lessonIds: list[str] = Field(min_length=2,max_length=2)
+    lessonIds: list[str] = Field(min_length=2)
     teacherId: str
     period: Period
     roomId: str | None
@@ -130,7 +132,7 @@ class Interpretation(StrictModel):
 
 SYSTEM = '''Ты помощник завуча. Ты ТОЛЬКО переводишь просьбу в условия на ОДИН выбранный день.
 Расписание рассчитывает отдельный проверяемый алгоритм. Никогда не утверждай, что изменил или сохранил его.
-Постоянные ограничения находятся в permanentAvailability. Они действуют во всех вариантах. firstMonday=false у предмета отменяет обычное закрепление «Разговоров о важном»; по умолчанию они идут только первым уроком понедельника. Постоянные правила меняются в разделе «Ограничения», а не действием на один день.
+Постоянные ограничения находятся в permanentAvailability. firstMonday=false у предмета снимает закрепление «Разговоров о важном». По умолчанию это первый урок понедельника. На выбранный понедельник пользователь может явно указать другое время для «Разговоров о важном» через pin_lesson или join_lessons. Постоянное правило от этого не меняется.
 Ответ строго JSON: {"date":"YYYY-MM-DD","reply":"короткое пояснение на русском",
 "questions":[],"unsupported":[],"actions":[]}.
 Разрешённые actions (все поля обязательны, никаких дополнительных полей):
@@ -141,27 +143,27 @@ SYSTEM = '''Ты помощник завуча. Ты ТОЛЬКО перевод
 {"type":"pin_lesson","lessonId":"id","period":3} конкретный существующий урок поставить и закрепить на номере period.
 {"type":"room_unavailable","roomId":"id","first":1,"last":8} кабинет недоступен.
 {"type":"cancel_lesson","lessonId":"id"} отменить конкретный урок ТОЛЬКО по явному указанию пользователя.
-{"type":"join_lessons","lessonIds":["id1","id2"],"teacherId":"id","period":1,"roomId":null} провести ДВА существующих урока одного предмета совместно: два класса у одного из их преподавателей. roomId=null означает подобрать подходящий кабинет.
-Объединение разрешено только когда пользователь просит или допускает совместное занятие. Каждый исходный урок должен быть целого класса, с одним преподавателем; новые группы не создаются. Уроки должны иметь один subjectId.
+{"type":"join_lessons","lessonIds":["id1","id2"],"teacherId":"id","period":1,"roomId":null} провести несколько существующих уроков одного предмета совместно у одного из их преподавателей. Указывай все исходные lessonIds. Одна запись classIds может уже включать несколько классов: добавь её ID один раз. Например, урок 8а и 8б в одной записи плюс отдельный урок 9в дают три класса по двум ID. Укажи ID кабинета, если он назван пользователем; roomId=null означает подобрать подходящий кабинет.
+Объединяй только по просьбе или с разрешения пользователя. Источники должны иметь один subjectId, одного преподавателя в каждой записи и разные целые классы; новые группы не создаются. Для технологии используй отдельные действия подгрупп.
 Если пользователь допускает другой класс без указания, предложи подходящий существующий урок того же предмета у доступного учителя, объясни выбор в reply. Если подходящих занятий нет, задай вопрос. Не назначай постороннего учителя.
 При выборе второго класса предпочитай ту же параллель: например, 9е с 9г или 9д. Разный возраст не выбирай без необходимости; если подходит только другой возраст, уточни это у пользователя.
-«Разговоры о важном», включая совместные, разрешены ТОЛЬКО первым уроком понедельника. Исключений по времени нет.
+Если для совместных «Разговоров о важном» время не указано, используй время урока выбранного преподавателя. Первый урок, занятый его же исходными «Разговорами о важном», освобождается для совместного занятия. При явно указанном другом номере понедельника поставь period из просьбы.
 {"type":"class_hour","classId":"id","lessonId":null,"replaceLessonId":null,"period":1} назначить КЛАССНЫЙ ЧАС (Кл/ч) на выбранный урок (period от 1 до 7, по умолчанию 1) выбранной даты у классного руководителя из classLeaders, в его кабинете classLeaderRooms. Классный час НЕ ограничен первым уроком. Применяется только по явной просьбе пользователя, отдельно для каждого указанного класса. Для всех классов сформируй отдельное действие каждому.
 Если пользователь просит заменить КОНКРЕТНЫЙ урок, например физкультуру 8г с любого номера, классным часом первым уроком, укажи ID физкультуры в replaceLessonId. Программа уберёт именно этот урок и поставит Кл/ч первым; прежний первый предмет останется и будет переставлен. Не создавай для этого pin_lesson или cancel_lesson: это ОДНО действие class_hour. Совмещай его с отсутствиями учителей и классными часами остальных классов в одном ответе, это поддерживается.
 Если классный руководитель отсутствует, его Кл/ч отменяется с пояснением, остальные условия сохраняются. Это не unsupported.
 {"type":"allow_class_gaps"} — резервное разрешение окон в выбранный день. Не добавляй его самостоятельно: программа сначала ищет без окон и только при неудаче показывает резервный вариант с предупреждением. Ранее сохранённое разрешение можно повторить.
 Обычный урок на выбранном месте заменяется классным часом только на эту дату. Учебный план и базовая неделя не меняются. Спаренный урок не отменяется наполовину: блок сохраняется для перестановки целиком. Если просят переименовать конкретный подходящий урок, укажи его lessonId и period: это разрешено для любого урока целого класса у его классного руководителя. Если руководитель неизвестен, попроси заполнить карточку класса. Если выбраны два класса ОДНОГО классного руководителя на одном уроке, они автоматически проводят ОДИН совместный классный час: у учителя нет двух отдельных занятий одновременно. Классы разных руководителей так не объединяются.
 Если пользователь прямо просит пропустить/отменить «Разговоры о важном», используй cancel_lesson для этого урока, не переноси его позже.
-Если класс начинает со второго и учитель РОВ отсутствует, этот урок отменится, а не переместится на другой номер.
+Если класс начинает со второго и учитель РОВ отсутствует, без явной просьбы назначить РОВ позже его урок отменится.
 {"type":"allow_eighth","lessonId":"id"} явное разрешение восьмого урока ТОЛЬКО этому занятию на выбранную дату. Добавляй только если пользователь прямо разрешил восьмой урок; для точного переноса добавь pin_lesson с period=8. Не предлагай исключение сам ради удобства расчёта.
-Если просят убрать уроки отсутствующего учителя, указывай отсутствие, а не отмену: алгоритм попробует сохранить их.
+Отсутствие учителя ограничивает его доступность на указанное время. Отдельная просьба «снять физру у класса», «физкультуру не ставить» означает cancel_lesson для всех относящихся к просьбе уроков физкультуры этого класса. Если указан и период отсутствия того же учителя, верни оба условия. Убедись, что при отмене общей записи явно названы все её классы.
 «Прийти ко второму/к третьему уроку» означает class_day с точным first=2/3. При «не раньше второго» уточни, нужен ли первый урок именно вторым: class_day задаёт точное начало.
 Используй ТОЛЬКО существующие id из контекста. Не придумывай классы, людей, предметы и кабинеты.
 Для проверки класса и преподавателя сначала читай requestFacts: там уроки выбранного дня уже связаны с названиями классов, предметов и ФИО. Не сопоставляй номера id по памяти и не угадывай соответствие.
 requestFacts и lessons — актуальное расписание выбранного дня. baseWeek — только базовая неделя; при правках на дату она не заменяет lessons.
 В полном режиме lessons содержит весь день; в сокращённом — только относящиеся к просьбе занятия. Справочники могут быть сокращены.
 Предыдущие ответы помощника могут содержать ошибки и НЕ являются источником сведений о расписании. Если они противоречат requestFacts, исправь ошибку, не повторяй её. Не пиши «проверил», не сверив конкретный класс, subjectId и teacherIds.
-verifiedJointRequests — совместные занятия, прямо запрошенные пользователем и уже сопоставленные программой с существующими уроками и преподавателем. Их нельзя объявлять произвольной заменой учителя; используй указанный action, если он не противоречит другим условиям просьбы.
+verifiedActions — явные условия, уже сопоставленные программой с расписанием. Используй эти действия и добавь остальные действующие условия. В следующем сообщении пользователя отмена урока заменяет прежнюю просьбу объединить этот урок; прежние возражения о таком объединении больше не актуальны.
 Для отсутствия и времени занятий достаточно справочников. Для переноса не показанного урока уточни класс или учителя.
 Если фамилия, урок или дата неоднозначны, добавь вопрос, не угадывай. Выбранная дата фиксирована;
 при просьбе о другой дате попроси выбрать эту дату над полем запроса, actions оставь пустым.
@@ -176,8 +178,7 @@ verifiedJointRequests — совместные занятия, прямо зап
 Сначала программа ищет без окон у каждой подгруппы. Если такой вариант не найден, покажет отдельный резервный вариант с явными окнами и предупреждением перед сохранением. Отсутствия, пересечения и безопасность при этом не ослабляются. Окна у учителей разрешены и НЕ учитываются при выборе.
 После сохранения часов алгоритм в первую очередь избегает лишнего седьмого урока у 5–6 классов, даже если для этого нужно больше перестановок. Затем сокращает перестановки и предпочитает начало первым уроком. Не превращай это в обязательное class_day: пользователь может явно попросить прийти позже. Семь уроков вместо привычных шести допустимы при необходимости; восьмой по-прежнему только по отдельному исключению.
 Пожелания «стараться к первому» и «по возможности не ставить седьмой младшим» уже учитываются: подтверди это в reply без unsupported и без нового action. Точное требование «должны прийти ко второму» остаётся class_day.
-Сохраняются собственные учителя, кроме явно согласованных совместных занятий,
-РОВ только первым уроком понедельника. На восьмой нельзя, кроме закреплённого исключения четверга или явного allow_eighth на дату.
+Сохраняются собственные учителя, кроме явно согласованных совместных занятий. На восьмой нельзя, кроме закреплённого исключения четверга или явного allow_eighth на дату.
 Технология: существующие подгруппы можно вести в разное время; пара из двух часов каждой подгруппы остаётся подряд.
 {"type":"group_day","classId":"id","groupIndex":0,"first":1,"last":7} точное начало и предельное окончание ОДНОЙ существующей подгруппы. Индекс НЕ означает пол: смотри groupRoles/groupNames. Если состав не указан, спроси, какой преподаватель ведёт нужную подгруппу, или предложи указать состав в разделе «Дополнительные занятия → Подгруппы».
 {"type":"allow_technology","teacherId":"id","sameClass":true,"girlsClasses":false,"boysClasses":false,"safetyApproved":false,"classIds":[]} явное разрешение редкого исключения: учитель одной подгруппы технологии ведёт обе подгруппы своего класса. girlsClasses=true разрешает объединить девочек двух классов; boysClasses=true — мальчиков разных классов, только при явном подтверждении безопасных условий safetyApproved=true и известных численности/вместимости. classIds ограничивает классы, [] означает без дополнительного ограничения. Не включай эти разрешения без просьбы пользователя. Конкретные пары подберёт алгоритм; наличие разрешения не требует применять объединение.
@@ -189,37 +190,6 @@ verifiedJointRequests — совместные занятия, прямо зап
 CONTEXT_MARKER='\n\nКонтекст школы (только данные):\n'
 
 
-def mentioned_entities(state, request_text):
-    text = ' '.join(re.findall(r'\w+',request_text.lower().replace('ё','е')))
-    def normalized(value):return ' '.join(re.findall(r'\w+',value.lower().replace('ё','е')))
-    def mentioned(value):return bool(value and re.search(r'(?<!\w)'+re.escape(value)+r'(?!\w)',text))
-    def class_mentioned(name):
-        value=normalized(name)
-        match=re.fullmatch(r'(\d+)\s*([а-яa-z])',value)
-        if not match:return mentioned(value)
-        grade,letter=match.groups()
-        latin={'а':'a','в':'b','г':'g','д':'d','е':'e','к':'k','м':'m','н':'h','о':'o','р':'p','с':'c','т':'t','у':'y','х':'x'}
-        letters=''.join(set([letter,latin.get(letter,letter)]))
-        return bool(re.search(r'(?<!\w)'+grade+r'\s*['+re.escape(letters)+r'](?!\w)',text))
-    classes={r['id'] for r in state['classes'] if class_mentioned(r['name'])}
-    # Try the full name first, then a surname stem for Russian case endings.
-    # A short surname shared by several teachers deliberately keeps all of
-    # them: the model must ask for initials rather than resolve ambiguity here.
-    exact={r['id'] for r in state['teachers'] if mentioned(normalized(r['name']))}
-    surnames={}
-    for row in state['teachers']:
-        name=normalized(row['name']).split()[0]
-        surnames.setdefault(name,[]).append(row['id'])
-    teachers=set(exact)
-    for surname,ids in surnames.items():
-        if exact.intersection(ids):continue
-        stem=surname_stem(surname)
-        if len(stem)>=3 and re.search(r'(?<!\w)'+re.escape(stem)+r'[а-я]*(?!\w)',text):teachers.update(ids)
-    return {'classes':classes,'teachers':teachers,
-            'subjects':{r['id'] for r in state['subjects'] if mentioned(normalized(r['name']))},
-            'rooms':{r['id'] for r in state['rooms'] if mentioned(normalized(r['name']))}}
-
-
 def relevant_lessons(state, day, request_text):
     """Keep language interpretation small; the solver still sees the whole day."""
     ref=mentioned_entities(state,request_text)
@@ -227,37 +197,8 @@ def relevant_lessons(state, day, request_text):
 
 
 def explicit_joint_requests(state,day,message):
-    """Resolve only an explicit two-class ROV request with a named host.
-
-    This is a narrow, evidence-based safeguard, not a general language planner.
-    Ambiguous names, negation, other subjects and missing lessons stay with AI.
-    """
-    text=message.lower().replace('ё','е') if isinstance(message,str) else ''
-    if not re.search(r'совмест|вместе|объедин',text):return []
-    if not ('разговор' in text and 'важн' in text or re.search(r'\bров\b',text)):return []
-    if parse_date(day).weekday()!=0:return []
-    if re.search(r'\bне\s+(?:\w+\s+){0,2}(?:совмест|объедин|вместе|провест|провед|взять|должн)',text):return []
-    # Never infer period 1 after an explicit request for a different period.
-    if re.search(r'втор|треть|четверт|пят|шест|седьм|восьм|(?<!\d)[2-8]\s*-?[ймго]*\s*урок',text):return []
-    refs=mentioned_entities(state,message)
-    if len(refs['classes'])!=2:return []
-    hosts=[];loose_hosts=[]
-    for teacher in state['teachers']:
-        if teacher['id'] not in refs['teachers']:continue
-        surname=teacher['name'].lower().replace('ё','е').split()[0]
-        stem=surname_stem(surname)
-        name=re.escape(stem)+r'[а-я]*'
-        if re.search(r'\b(?:провести|проведет|ведет|вести)\s+'+name+r'\b',text) or re.search(r'\b'+name+r'\s+(?:должн[а-я]*\s+)?(?:взять|провест[а-я]*|проведет|ведет)\b',text):
-            hosts.append(teacher['id'])
-        if re.search(r'\bу\s+'+name+r'\b',text):loose_hosts.append(teacher['id'])
-    if not hosts:hosts=loose_hosts
-    if len(hosts)!=1:return []
-    pool=[l for l in lessons_for_day(state,day) if len(l['classIds'])==len(l['teacherIds'])==1
-          and 'groupIndex' not in l and not l.get('joint') and l['period']==1
-          and must_be_first(indexes(state)['subjects'][l['subjectId']]) and l['classIds'][0] in refs['classes']]
-    if len(pool)!=2 or {c for l in pool for c in l['classIds']}!=refs['classes']:return []
-    if len({l['subjectId'] for l in pool})!=1 or not any(l['teacherIds']==hosts for l in pool):return []
-    return [{'type':'join_lessons','lessonIds':[l['id'] for l in pool],'teacherId':hosts[0],'period':1,'roomId':None}]
+    actions,_=verified_actions(state,day,[message])
+    return [row for row in actions if row['type']=='join_lessons']
 
 
 def named_lesson(state,lesson):
@@ -281,38 +222,8 @@ def safe_lesson(lesson):
     return result
 
 
-def ground_joint_refusal(raw,state,day,message):
-    """Ground a missing joint action only for a fully resolved user request.
-
-    All other refusals/questions stay in place and still block partial apply.
-    The replacement action goes through the ordinary strict validator.
-    """
-    if not isinstance(raw,dict):return raw
-    verified=explicit_joint_requests(state,day,message)
-    if len(verified)!=1 or not isinstance(raw.get('actions'),list) or any(r.get('type')=='join_lessons' for r in raw['actions'] if isinstance(r,dict)):return raw
-    joint=verified[0];ix=indexes(state)
-    pool={l['id']:l for l in lessons_for_day(state,day)}
-    names=[ix['classes'][c]['name'].lower() for i in joint['lessonIds'] for c in pool[i]['classIds']]
-    def related(value):
-        text=str(value).lower().replace('ё','е')
-        return all(re.search(r'(?<!\w)'+re.escape(n)+r'(?!\w)',text) for n in names) and bool(re.search(r'совмест|объедин|проведен|преподавател',text))
-    questions=raw.get('questions');unsupported=raw.get('unsupported');actions=raw.get('actions')
-    if not all(isinstance(rows,list) for rows in (questions,unsupported,actions)):return raw
-    def false_refusal(value):
-        text=str(value).lower().replace('ё','е')
-        return related(value) and bool(re.search(r'не\s+(?:является\s+)?преподавател|не\s+ведет|произвольн[а-я]*\s+замен',text))
-    false_claim=any(false_refusal(v) for v in unsupported)
-    if not false_claim and (questions or unsupported):return raw
-    result=deepcopy(raw)
-    def teacher_alternative(value):
-        text=str(value).lower()
-        return related(value) and bool(mentioned_entities(state,text)['teachers']) and 'или' in text and not re.search(r'кабинет|групп|врем|параллел|возраст',text)
-    result['questions']=[v for v in questions if not teacher_alternative(v)]
-    result['unsupported']=[v for v in unsupported if not false_refusal(v)]
-    result['actions'].append(joint)
-    teacher=ix['teachers'][joint['teacherId']]['name']
-    result['reply']='По текущему расписанию '+', '.join(names)+': «Разговоры о важном» совместно первым уроком у '+teacher+'. Проверьте условия перед подбором.'
-    return result
+def ground_joint_refusal(raw,state,day,message,history=()):
+    return ground_reply(raw,state,day,[r['content'] for r in history if r['role']=='user']+[message])
 
 
 def messages_for(state, day, message, history, *, full_context=False):
@@ -349,7 +260,9 @@ def messages_for(state, day, message, history, *, full_context=False):
     context['technologyGroups']=[{k:c[k] for k in ('id','name','groupNames','groupRoles','groupSizes') if k in c} for c in state['classes']]
     focus=relevant_lessons(state,day,request_text)
     context['requestFacts']=[named_lesson(state,l) for l in focus]
-    context['verifiedJointRequests']=explicit_joint_requests(state,day,message)
+    user_messages=[r['content'] for r in history if isinstance(r,dict) and r.get('role')=='user' and isinstance(r.get('content'),str)]
+    verified,_=verified_actions(state,day,user_messages+[message])
+    context['verifiedActions']=verified
     if full_context:
         from .model import week_dates
         from .rotation import week as effective_week,number as cycle_number
@@ -361,6 +274,7 @@ def messages_for(state, day, message, history, *, full_context=False):
                            'eighthPeriodException':state['school'].get('eighthPeriodException'),
                            'noClassGaps':True,'noNewTeacherGaps':False,'crossDayMovesAllowed':False,
                            'pairedLessonsConsecutive':True,'rovWeekday':0 if any(must_be_first(s) for s in state['subjects']) else None,'rovPeriod':1 if any(must_be_first(s) for s in state['subjects']) else None,
+                           'rovTimeException':'An explicitly requested period on the selected Monday',
                            'bells':state['school']['bells']},
             'teachers':records('teachers',('id','name','subjectIds','weeklyTarget','extraLimit','maxDaily','maxDays','unavailable','homeroom','homeroomRoomId')),
             'classes':records('classes',('id','name','size','firstPeriod','maxDaily','unavailable','groupNames','groupRoles','groupSizes')),
@@ -403,6 +317,23 @@ def compose_class_hour_steps(raw,state,day,request_text):
     return result
 
 
+def _set_rov_time(lesson, subject, day, period):
+    lesson.pop('rovTime', None)
+    if must_be_first(subject) and is_rov(subject) and period>1 and parse_date(day).weekday()==0:
+        lesson['rovTime']={'date':day,'period':period}
+
+
+def _check_rov_time(state, day, subject, lesson, row, request_text):
+    period=row['period'];weekday=parse_date(day).weekday()
+    if subject_time_allowed(subject,lesson,weekday,period,day):return
+    saved = canonical_actions(state.get('assistantConditions',{}).get(day,[]))
+    if (is_rov(subject) and weekday==0 and
+            (canonical_actions([row])[0] in saved or requests_rov_time(state,request_text,lesson['classIds'],period))):
+        _set_rov_time(lesson,subject,day,period)
+        return
+    raise AssistantError('По умолчанию «Разговоры о важном» идут первым уроком понедельника. Для переноса укажите точный номер урока на выбранный понедельник.')
+
+
 def validate_interpretation(raw, state, day, request_text=''):
     raw=compose_class_hour_steps(raw,state,day,request_text)
     try:
@@ -422,12 +353,14 @@ def validate_interpretation(raw, state, day, request_text=''):
             if (parsed.actions[0].first,parsed.actions[0].last)!=(period,period):
                 raise AssistantError('Помощник неточно понял время отсутствия: указан один урок, а в ответе другой диапазон. Повторите просьбу или выберите другую модель. Расписание не изменено.')
     ix = indexes(state)
-    from .joint_lessons import create,problems as joint_problems,source_ids
+    from .joint_lessons import create,problems as joint_problems
     lessons = {l['id']:l for l in lessons_for_day(state,day)}
-    sources=dict(lessons)
+    joint_sources=sources_for(lessons.values())
+    sources={**lessons,**joint_sources}
     for lesson in lessons.values():
-        for source in lesson.get('joint',{}).get('sources',[]):sources[source['id']]=source
         for source in lesson.get('classHour',{}).get('sources',[]):sources[source['id']]=source
+    saved_cancels={r['lessonId'] for r in state.get('assistantConditions',{}).get(day,[]) if r['type']=='cancel_lesson'}
+    cancelled_lessons={l['id']:l for l in base_for_day(state,day) if l['id'] in saved_cancels}
     permits={a.lessonId for a in parsed.actions if isinstance(a,Eighth)}
     existing_permits={r['lessonId'] for r in state.get('assistantConditions',{}).get(day,[]) if r['type']=='allow_eighth'}
     if permits-existing_permits and not re.search(r'восьм|(?<!\d)8\s*(?:-?[ймго]+\s*)?урок',request_text.lower()):
@@ -491,23 +424,28 @@ def validate_interpretation(raw, state, day, request_text=''):
         elif isinstance(action,Join):
             if action.teacherId not in ix['teachers'] or action.roomId is not None and action.roomId not in ix['rooms']:
                 raise AssistantError('Для совместного занятия не найден преподаватель или кабинет.')
-            if len(set(action.lessonIds))!=2 or any(i not in sources for i in action.lessonIds):
-                raise AssistantError('Выберите два разных существующих урока для объединения.')
-            rows=[sources[i] for i in action.lessonIds]
-            if any(must_be_first(ix['subjects'][l['subjectId']]) for l in rows) and (parse_date(day).weekday()!=0 or action.period!=1):
-                raise AssistantError('«Разговоры о важном», включая совместные, разрешены только первым уроком понедельника.')
+            if len(set(action.lessonIds))!=len(action.lessonIds) or any(i not in joint_sources for i in action.lessonIds):
+                raise AssistantError('Выберите разные исходные уроки выбранного дня для объединения.')
+            rows=[joint_sources[i] for i in action.lessonIds]
             try:joined=create(rows,action.teacherId,action.period,day,action.roomId)
             except (StopIteration,KeyError):raise AssistantError('Совместный урок должен провести один из преподавателей выбранных занятий.') from None
-            # The original day remains the evidence for the merged sources.
-            checked=deepcopy(state)
-            errors=joint_problems(checked,joined,day)
+            subject=ix['subjects'][joined['subjectId']]
+            _check_rov_time(state,day,subject,joined,row,request_text)
+            errors=joint_problems(state,joined,day)
             if errors:raise AssistantError(errors[0])
             if action.period==8 and joined['id'] not in permits:
                 raise AssistantError('Для совместного восьмого урока нужно отдельное явное разрешение.')
             if any(l.get('locked') and l['period']!=action.period for l in rows):
                 raise AssistantError('Закреплённое занятие сначала нужно открепить в редакторе.')
             classes=', '.join(ix['classes'][c]['name'] for c in joined['classIds'])
-            labels.append(f"Совместно: {classes}, {ix['subjects'][joined['subjectId']]['name']}, {action.period}-й урок, {ix['teachers'][action.teacherId]['name']}")
+            label=f"Совместно: {classes}, {subject['name']}, {action.period}-й урок, {ix['teachers'][action.teacherId]['name']}"
+            if action.roomId:
+                room=ix['rooms'][action.roomId]
+                size=room_student_count(state,joined,action.roomId)
+                if room.get('capacity') and size is not None and size>room['capacity']:
+                    raise AssistantError(f"{room['name']} не вмещает выбранные классы. Выберите другое помещение.")
+                label+=f", {room['name']}"
+            labels.append(label)
         elif isinstance(action,Eighth):
             if action.lessonId not in lessons:raise AssistantError('Урок для исключения не найден в выбранной дате.')
             l=lessons[action.lessonId]
@@ -543,13 +481,15 @@ def validate_interpretation(raw, state, day, request_text=''):
             labels.append(f"Кабинет {ix['rooms'][action.roomId]['name']}: недоступен на уроках {action.first}–{action.last}")
         else:
             lesson = lessons.get(action.lessonId)
+            if lesson is None and isinstance(action,Cancel):lesson=cancelled_lessons.get(action.lessonId)
             if not lesson:
                 raise AssistantError('Урок из ответа не найден в выбранном дне. Уточните класс, предмет и номер урока.')
             title = ', '.join(ix['classes'][c]['name'] for c in lesson['classIds']) + ' · ' + ix['subjects'][lesson['subjectId']]['name']
             if isinstance(action, Pin):
-                if must_be_first(ix['subjects'][lesson['subjectId']]) and (parse_date(day).weekday()!=0 or action.period!=1):
-                    raise AssistantError('«Разговоры о важном» разрешены только первым уроком понедельника.')
                 checked=deepcopy(lesson)
+                if lesson.get('joint') and action.period!=lesson['period']:
+                    raise AssistantError('Для переноса совместного урока укажите вместе его классы, преподавателя и новый номер урока.')
+                _check_rov_time(state,day,ix['subjects'][lesson['subjectId']],checked,row,request_text)
                 if action.lessonId in permits:checked['eighthOn']=day
                 if not period_allowed(state,checked,action.period,parse_date(day).weekday(),date=day):
                     raise AssistantError('Такое закрепление нарушает правило восьмого урока.')
@@ -572,8 +512,8 @@ def validate_interpretation(raw, state, day, request_text=''):
     if pins & {a.lessonId for a in parsed.actions if isinstance(a, Cancel)}:
         raise AssistantError('Один урок одновременно закреплён и отменён. Уточните просьбу.')
     joined_ids=[i for a in parsed.actions if isinstance(a,Join) for i in a.lessonIds]
-    if len(joined_ids)!=len(set(joined_ids)) or set(joined_ids)&{a.lessonId for a in parsed.actions if isinstance(a,Cancel)}:
-        raise AssistantError('Один урок нельзя объединить дважды или одновременно отменить.')
+    if len(joined_ids)!=len(set(joined_ids)) or set(joined_ids)&(pins|{a.lessonId for a in parsed.actions if isinstance(a,Cancel)}):
+        raise AssistantError('Один урок нельзя одновременно объединить и отменить, закрепить отдельно или включить в другое объединение.')
     tech_refs=[(r.lessonId,r.groupIndex) for a in parsed.actions if isinstance(a,JoinTechnology) for r in a.sources]
     if len(tech_refs)!=len(set(tech_refs)) or {p for p,g in tech_refs}.intersection(joined_ids+list(pins)+[a.lessonId for a in parsed.actions if isinstance(a,Cancel)]):
         raise AssistantError('Подгруппа одновременно участвует в несовместимых действиях.')
@@ -624,10 +564,15 @@ def prepared_state(state, day, actions):
             pool.update({s['id']:s for s in prior['joint']['sources']})
         if any(i not in pool for i in row['lessonIds']):raise AssistantError('Исходные уроки объединения изменились. Повторите просьбу.')
         merged=create([pool[i] for i in row['lessonIds']],row['teacherId'],row['period'],day,row.get('roomId'))
+        subject=next(s for s in work['subjects'] if s['id']==merged['subjectId'])
+        _set_rov_time(merged,subject,day,row['period'])
         work['days'][day]=[l for l in current if l['id'] not in row['lessonIds']]+[merged]
     permits={r['lessonId'] for r in actions if r['type']=='allow_eighth'}
+    pins={r['lessonId']:r['period'] for r in actions if r['type']=='pin_lesson'}
+    subjects={s['id']:s for s in work['subjects']}
     for lesson in work['days'][day]:
         if lesson['id'] in permits:lesson['eighthOn']=day
+        if lesson['id'] in pins:_set_rov_time(lesson,subjects[lesson['subjectId']],day,pins[lesson['id']])
     from .technology import apply as apply_technology
     try:apply_technology(work,day,actions)
     except ValueError as error:raise AssistantError(str(error)) from None
@@ -817,6 +762,6 @@ def commit(state, day, actions, result):
             if not lesson.get('locked'):
                 lesson['assistantPinned'] = True
             lesson['locked'] = True
-    known={l['id'] for rows in [state['baseLessons'],*state.get('rotationWeeks',{}).values(),*state['days'].values(),*state['dayBases'].values()] for l in rows}
+    known={l['id'] for l in base_for_day(state,day)+state['days'][day]}
     state['assistantConditions'][day]=[r for r in actions if r['type']!='cancel_lesson' or r['lessonId'] in known]
     return state
