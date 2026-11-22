@@ -358,12 +358,14 @@ document.addEventListener('click', async e => {
     a.connectionMessage = 'Ключ удалён с этого компьютера.';
   }, true);
   if (action === 'assistant-replay') return assistantWork('Подбираем расписание по условиям из диалога…', async () => {
-    a.preview=await api('/assistant/replay',{revision:S.revision,threadId:a.threadId,turnId:a.replay.id});
+    a.preview=await withScheduleCalculation('Подбираем расписание', () =>
+      api('/assistant/replay',{revision:S.revision,threadId:a.threadId,turnId:a.replay.id}));
     a.selected=a.preview.variants[0]?.id ?? 0;
     if(a.preview.variants.length)await showSchedulePreview('assistant',a.preview.date,a.preview.variants,a.selected,a.preview.revision);
   });
   if (action === 'assistant-preview') return assistantWork('Подбираем расписание…', async () => {
-    a.preview = await api('/assistant/preview', {revision: a.response.revision, draftId: a.response.draftId});
+    a.preview = await withScheduleCalculation('Подбираем расписание', () =>
+      api('/assistant/preview', {revision: a.response.revision, draftId: a.response.draftId}));
     a.selected = a.preview.variants[0]?.id ?? 0;
     if(a.preview.variants.length)await showSchedulePreview('assistant',a.date,a.preview.variants,a.selected,a.preview.revision);
   });

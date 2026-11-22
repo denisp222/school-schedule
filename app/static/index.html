@@ -6,28 +6,28 @@
   <title>Расписание</title>
   <meta name="description" content="Школьное расписание и ежедневные замены на этом компьютере">
   <meta name="theme-color" content="#343747">
-  <script src="/static/startup.js?v=2.26.0"></script>
+  <script src="/static/startup.js?v=2.26.1"></script>
   <link rel="icon" href="/static/favicon.ico" sizes="any">
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/static/style.css?v=2.26.0">
-  <link rel="stylesheet" href="/static/extras.css?v=2.26.0">
-  <link rel="stylesheet" href="/static/technology-ui.css?v=2.26.0">
-  <script src="/static/app.js?v=2.26.0" defer></script>
-  <script src="/static/assistant.js?v=2.26.0" defer></script>
-  <script src="/static/day-versions.js?v=2.26.0" defer></script>
-  <script src="/static/voice.js?v=2.26.0" defer></script>
-  <script src="/static/extras.js?v=2.26.0" defer></script>
-  <script src="/static/individual.js?v=2.26.0" defer></script>
-  <script src="/static/class-hours.js?v=2.26.0" defer></script>
-  <script src="/static/constraints.js?v=2.26.0" defer></script>
-  <script src="/static/backup.js?v=2.26.0" defer></script>
-  <script src="/static/annual.js?v=2.26.0" defer></script>
-  <script src="/static/updates.js?v=2.26.0" defer></script>
-  <script src="/static/technology-ui.js?v=2.26.0" defer></script>
-  <script src="/static/workspace.js?v=2.26.0" defer></script>
-<script src="/static/program-assistant.js?v=2.26.0" defer></script>
-<script src="/static/academic.js?v=2.26.0" defer></script>
-<script src="/static/chronograph-import.js?v=2.26.0" defer></script>
+  <link rel="stylesheet" href="/static/style.css?v=2.26.1">
+  <link rel="stylesheet" href="/static/extras.css?v=2.26.1">
+  <link rel="stylesheet" href="/static/technology-ui.css?v=2.26.1">
+  <script src="/static/app.js?v=2.26.1" defer></script>
+  <script src="/static/assistant.js?v=2.26.1" defer></script>
+  <script src="/static/day-versions.js?v=2.26.1" defer></script>
+  <script src="/static/voice.js?v=2.26.1" defer></script>
+  <script src="/static/extras.js?v=2.26.1" defer></script>
+  <script src="/static/individual.js?v=2.26.1" defer></script>
+  <script src="/static/class-hours.js?v=2.26.1" defer></script>
+  <script src="/static/constraints.js?v=2.26.1" defer></script>
+  <script src="/static/backup.js?v=2.26.1" defer></script>
+  <script src="/static/annual.js?v=2.26.1" defer></script>
+  <script src="/static/updates.js?v=2.26.1" defer></script>
+  <script src="/static/technology-ui.js?v=2.26.1" defer></script>
+  <script src="/static/workspace.js?v=2.26.1" defer></script>
+<script src="/static/program-assistant.js?v=2.26.1" defer></script>
+<script src="/static/academic.js?v=2.26.1" defer></script>
+<script src="/static/chronograph-import.js?v=2.26.1" defer></script>
 </head>
 <body>
   <button type="button" class="skip" data-action="skip">К расписанию</button>
@@ -76,6 +76,16 @@
     </div>
     <div class="modal-body" id="modal-body"></div>
     <div class="modal-foot" id="modal-foot"></div>
+  </dialog>
+
+  <dialog id="schedule-calculation" class="modal small" aria-labelledby="schedule-calculation-title" aria-describedby="schedule-calculation-description">
+    <div class="modal-body calculation-body">
+      <span class="calculation-spinner" aria-hidden="true"></span>
+      <div>
+        <h2 id="schedule-calculation-title"></h2>
+        <p id="schedule-calculation-description">Расчёт может занять несколько секунд. Затем вы увидите изменения для проверки.</p>
+      </div>
+    </div>
   </dialog>
 
   <dialog id="sheet" class="sheet" aria-labelledby="sheet-title">

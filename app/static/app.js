@@ -543,11 +543,11 @@ function lessonTile({subject = '', badge = '', detail = '', room = '', note = ''
         ${detail ? `<span class="lesson-detail">${esc(detail)}</span>` : ''}
         ${room ? `<span class="lesson-room">${esc(room)}</span>` : ''}
       </span>` : ''}
+      ${subject && (statusText || note) ? `<span class="lesson-footer">
+        ${statusText}
+        ${note ? `<span class="lesson-note">${esc(note)}</span>` : ''}
+      </span>` : ''}
     </span>
-    ${subject && (statusText || note) ? `<span class="lesson-footer">
-      ${statusText}
-      ${note ? `<span class="lesson-note">${esc(note)}</span>` : ''}
-    </span>` : ''}
   </${tag}>`;
 }
 
@@ -867,20 +867,30 @@ function openRepair() {
 async function runRepair() {
   const otherDays = false;
   const reason = $('#repair-reason')?.value || 'Изменение расписания';
-  const foot = $('#modal-foot');
-  const oldFoot = foot.innerHTML;
-  foot.innerHTML = `${button('Отмена', 'close-modal', 'ghost')}<span class="btn primary" aria-disabled="true">${icon('spark')}Подбираем…</span>`;
   try {
-    const result = await api('/repair', { revision: S.revision, date: S.date, allowOtherDays: otherDays, reason });
+    const result = await withScheduleCalculation('Подбираем замены', () =>
+      api('/repair', { revision: S.revision, date: S.date, allowOtherDays: otherDays, reason }));
     S.repairResult = result;
     S.repairContext = { otherDays, reason };
     S.selectedVariant = result.recommended ?? result.variants?.[0]?.id ?? 0;
     renderRepairPreview();
   } catch (error) {
-    foot.innerHTML = oldFoot;
     modalError(error.message);
   }
 }
+
+async function withScheduleCalculation(title, calculate) {
+  const dialog = $('#schedule-calculation');
+  $('#schedule-calculation-title').textContent = title;
+  dialog.showModal();
+  try {
+    return await calculate();
+  } finally {
+    dialog.close();
+  }
+}
+
+$('#schedule-calculation').addEventListener('cancel', event => event.preventDefault());
 
 function mergedChanges(result) {
   const out = [];
@@ -1194,7 +1204,8 @@ function formChecked(name) {
 }
 
 async function previewLessonPlacement(placement,view=S.view) {
-  const result=await api('/lesson/placement-preview',{...placement,revision:S.revision});
+  const result=await withScheduleCalculation('Проверяем ручную перестановку', () =>
+    api('/lesson/placement-preview',{...placement,revision:S.revision}));
   if(!result.variants.length)throw new Error(result.message);
   await showSchedulePreview('manual',placement.date,result.variants,0,result.revision,view);
 }
@@ -1929,7 +1940,7 @@ function renderSettings() {
         <div><h2>Расписание</h2><p>Версия <span id="app-version">${esc(S.appVersion || '')}</span></p></div>
         <button type="button" class="btn" data-action="show-releases">${icon('history')}Что нового</button>
       </section>
-      ${S.updateSettings?.configured?`<section class="table-card" style="padding:18px 22px;max-width:900px;margin-bottom:20px"><div class="assistant-actions"><label class="check-row"><input type="checkbox" data-update-setting ${S.updateSettings.enabled?'checked':''}> Проверять обновления после открытия</label>${button('Проверить обновления','update-check','ghost')}</div><p class="muted" style="margin-top:12px">Загрузка и установка требуют вашего подтверждения.</p></section>`:''}
+      ${S.updateSettings?.configured?`<section class="table-card update-settings"><div class="update-settings-actions"><label class="update-check"><input type="checkbox" data-update-setting ${S.updateSettings.enabled?'checked':''}><span>Проверять обновления после открытия</span></label>${button('Проверить обновления','update-check','ghost')}</div><p class="muted">Загрузка и установка требуют вашего подтверждения.</p></section>`:''}
       <form id="settings-form" class="table-card" style="padding:20px 22px;max-width:900px">
         <div class="form-grid two">
           <label class="field"><span>Название школы</span><input class="input" name="name" value="${esc(school.name)}"></label>
