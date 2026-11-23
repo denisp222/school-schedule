@@ -152,6 +152,46 @@ def test_individual_aliases_require_disambiguation_and_teacher_scope_can_be_corr
     assert not any(r.get('learnerId')=='pupil-1' for r in resolved['actions'])
 
 
+def test_explains_selected_and_compares_saved_variants_without_changing_schedule(desk,monkeypatch):
+    from app import assistant_api
+    client,store=desk
+    recorded=recorded_plan(store)
+    option=post(client,'/assistant/replay',{'revision':1,**recorded})['variants'][0]
+    prompts=[]
+
+    class Model:
+        def status(self):return {'configured':True}
+
+        def interpret(self,messages,**kwargs):
+            prompts.append(messages)
+            assert 'условия' in messages[0]['content'] or 'проверенными фактами' in messages[0]['content']
+            assert 'teacher_absence' in messages[0]['content']
+            assert '"moved":' in messages[0]['content'] and 'proven' in messages[0]['content']
+            return {'reply':'Вариант сохраняет занятия доступных преподавателей.'},'testing'
+
+    monkeypatch.setattr(assistant_api,'connection',lambda:Model())
+    explained=post(client,'/assistant/explain',{'revision':1,'previewId':option['previewId']})
+    assert explained['model']=='testing' and explained['program']['insight']
+    compare=post(client,'/assistant/interpret',{'revision':1,'date':DAY,'threadId':recorded['threadId'],
+                                                'message':'Сравни варианты и объясни перестановки.'})
+    assert compare['draftId'] is None and compare['actions']==[] and compare['reply']==explained['reply']
+    assert len(prompts)==2 and store.read()['revision']==1
+    exported=client.get('/api/assistant/conversations-export').json()['conversations'][0]
+    assert all(turn['response']['program']['insight'] for turn in exported['turns'][1:])
+
+
+def test_grounded_day_questions_work_without_model_and_do_not_invent_another_date(desk,monkeypatch):
+    from types import SimpleNamespace
+    from app import assistant_api
+    client,store=desk
+    monkeypatch.setattr(assistant_api,'connection',lambda:SimpleNamespace(status=lambda:{'configured':False}))
+    inspected=post(client,'/assistant/interpret',{'revision':1,'date':DAY,'message':'Какие уроки у 5б?'})
+    assert inspected['program']['insight'] and '1-й урок · 5б · Математика' in inspected['reply']
+    wrong_day=post(client,'/assistant/interpret',{'revision':1,'date':DAY,'message':'Какие уроки у 5б 25.11?'})
+    assert 'Выберите нужную дату' in wrong_day['reply'] and 'Математика' not in wrong_day['reply']
+    assert store.read()['revision']==1
+
+
 def test_repeats_a_saved_conversation_without_a_model_and_checks_the_revision(desk,monkeypatch):
     from app import assistant_api
     client,store=desk

@@ -142,7 +142,8 @@ def interpret(body: dict):
     day = server.require_day(body.get('date', ''))
     current = snapshot(body)
     from .program_assistant import handle
-    try:program=handle(body,current)
+    from .schedule_insights import respond
+    try:program=respond(body,current) or handle(body,current)
     except Exception:
         thread_id,turn_id=history().start(body.get('threadId'),day,str(body.get('message',''))[:4000])
         history().finish(turn_id,error='Не удалось обработать просьбу по программе. Данные не изменены.',status='error')
@@ -181,6 +182,19 @@ def interpret(body: dict):
     return {**draft,'labels':labels,'draftId':token if ready else None,'partialDraftId':token if not ready else None,
             'model':model,'threadId':thread_id,'turnId':turn_id,
             'revision': current['revision'], 'usage': connection().status()}
+
+
+@router.post('/explain')
+def explain(body:dict):
+    from .schedule_insights import respond
+    current=snapshot(body)
+    token=body.get('previewId')
+    if not isinstance(token,str):raise ValueError('Выберите вариант для объяснения.')
+    item=_previews.get(token) or context().repair_previews.get(token)
+    if not item or item['revision']!=current['revision']:
+        raise Conflict('Вариант устарел. Выполните подбор заново.')
+    return respond({'date':item['date'],'threadId':item.get('threadId'),
+                    'message':'Объясни выбранный вариант расписания.'},current,item['result'])
 
 
 @router.post('/preview')
@@ -227,8 +241,10 @@ def calculate_previews(body,current,day,actions,*,omissions=(),**metadata):
         summaries.append({**server._repair_summary(result),'day':payload,'previewId':token,'id':i})
     message='' if summaries else 'Проверьте расписание и ограничения на выбранный день.'
     if turn:
+        from .schedule_insights import variant_facts
         history().record_event(turn,'preview',message=message,omitted=list(omissions),variants=[
-            {k:r[k] for k in ('id','title','stats','warnings','unfulfilled','search','message')} for r in summaries])
+            {**{k:r[k] for k in ('id','title','stats','warnings','unfulfilled','search','message')},
+             'facts':variant_facts(current['state'],{**r,'actions':results[r['id']].get('actions',actions)})} for r in summaries])
     return {'date':day,'variants':summaries,'revision':current['revision'],'message':message}
 
 

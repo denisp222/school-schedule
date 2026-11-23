@@ -46,7 +46,7 @@ class AssistantHistory:
         allowed=('date','reply','questions','unsupported','actions','labels','model')
         payload=redact({k:response[k] for k in allowed if k in response}) if response else None
         if payload is not None and isinstance(program:=response.get('program'),dict):
-            payload['program']=redact({k:program[k] for k in ('labels','links','applied') if k in program})
+            payload['program']=redact({k:program[k] for k in ('labels','links','applied','insight') if k in program})
         with self.store.connect() as db:
             db.execute('UPDATE assistant_turns SET response=COALESCE(?,response),error=?,status=? WHERE id=?',
                        (json.dumps(payload,ensure_ascii=False) if payload is not None else None,redact(error)[:2000],status,turn))

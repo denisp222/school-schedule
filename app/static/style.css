@@ -1176,6 +1176,7 @@ dialog::backdrop {
 .assistant-history-row span { overflow-wrap:anywhere; }
 .schedule-preview-bar { margin:22px 0;padding:20px 0;border-top:1px solid var(--line-strong);border-bottom:1px solid var(--line-strong); }
 .schedule-preview-bar > .assistant-note { margin:0 0 14px; }
+.schedule-explanation { white-space: pre-wrap; line-height: 1.65; overflow-wrap: anywhere; }
 .preview-heading { display:flex;flex-wrap:wrap;align-items:baseline;gap:16px;margin-bottom:16px; }
 .preview-heading h2 { font:650 20px var(--font);margin:0; }
 .preview-heading span { font-size:13px;color:var(--ink-2); }

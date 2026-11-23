@@ -106,7 +106,7 @@ function renderAssistant() {
                   needsReview?'assistant-replay':'assistant-preview','primary','',a.pending?'disabled':'')}` : ''}
       </section>` : ''}
       ${assistantPreview()}
-      ${a.replay && !response ? `<section class="assistant-understood">
+      ${a.replay && (!response || response.program?.insight && !a.preview?.variants?.length) ? `<section class="assistant-understood">
         <h2>Условия из диалога</h2>
         ${a.replay.labels?.length ? `<details><summary>Посмотреть условия</summary><ul>${a.replay.labels.map(label=>`<li>${esc(label)}</li>`).join('')}</ul></details>` : ''}
         <button class="btn primary" type="button" data-action="assistant-replay" ${a.pending?'disabled':''}>Повторить подбор</button>
@@ -121,7 +121,7 @@ function renderAssistant() {
       <div class="assistant-note assistant-request-status" role="status" aria-live="polite">${esc(a.pending || '')}</div>
       ${a.error ? `<div role="alert">${notice(a.error, 'error')}</div>` : ''}
       <details class="assistant-capabilities"><summary>Что помощник умеет сейчас</summary>
-        <p>Помощь по программе, поиск нужного раздела, просмотр нагрузки, объяснение ограничений и подготовка изменений справочников. Доступность учителя, классное руководство, кабинет, норма часов и сокращения предметов меняются после вашего подтверждения. Справка и просмотр нагрузки работают без платного запроса.</p>
+        <p>Помощь по программе, поиск нужного раздела, просмотр нагрузки, сравнение вариантов и объяснение изменений, окон и отмен. Доступность учителя, классное руководство, кабинет, норма часов и сокращения предметов меняются после вашего подтверждения. Справка и просмотр нагрузки работают без платного запроса.</p>
         <p>Отсутствие учителя, уроки учителя только у выбранных классов и в заданное время, отмена всех индивидуальных занятий ученика на дату, время занятий класса, закрепление и отмена урока, закрытие кабинета.</p>
         <p>«Разговоры о важном» обычно идут первым уроком понедельника. На выбранную дату можно указать другой урок и объединить несколько классов в одном кабинете. Спаренные уроки идут подряд у каждой подгруппы.</p>
         <p>Совместный урок двух классов у одного из их преподавателей. Для технологии можно отдельно согласовать объединение подгрупп и время их прихода. У каждой подгруппы занятия идут без окон; окна учителей допускаются. Восьмой урок только по явному разрешению на выбранную дату.</p>
@@ -160,7 +160,7 @@ async function sendAssistant(form) {
     const result=await api('/assistant/interpret',{revision:S.revision,date:a.date,message,threadId:a.threadId,programContext:!!(a.response?.program||a.programContext),
       history:a.messages.filter(m=>!m.error && !m.notice).slice(-10).map(({role,content})=>({role,content}))});
     a.threadId=result.threadId;a.programContext=!!result.program;
-    a.replay=result.actions?.length?{id:result.turnId,labels:result.labels}:null;
+    if(!result.program?.insight)a.replay=result.actions?.length?{id:result.turnId,labels:result.labels}:null;
     a.messages.push({role: 'user', content: message});
     const content = JSON.stringify({ date: result.date, reply: result.reply, actions: result.actions,
       questions: result.questions, unsupported: result.unsupported });
@@ -203,7 +203,9 @@ async function openAssistantThread(id) {
     else a.messages.push({role:'assistant',content:turn.error || 'Запрос не завершён.',error:true,text:turn.error || 'Запрос не завершён.'});
   }
   const last=thread.turns.at(-1);
-  if(last?.response?.actions?.length)a.replay={id:last.id,labels:last.response.labels};
+  const plan=last?.response?.program?.insight
+    ? [...thread.turns].reverse().find(turn=>!turn.response?.program?.insight) : last;
+  if(plan?.response?.actions?.length)a.replay={id:plan.id,labels:plan.response.labels};
   if(last?.response && last.status!=='applied')a.response={questions:[],unsupported:[],labels:[],...last.response};
   render();
 }
@@ -249,6 +251,15 @@ document.addEventListener('click',async e=>{
     return;
   }
   if(node.dataset.action==='preview-save-version') {openSavePreviewVersion();return;}
+  if(node.dataset.action==='preview-explain') {
+    const variant=previewSelected();
+    return assistantWork('Объясняем вариант…',async()=>{
+      const explained=await withScheduleCalculation('Готовим объяснение',()=>
+        api('/assistant/explain',{revision:S.preview.revision,previewId:variant.previewId}));
+      openModal({title:'Объяснение варианта',sub:fmtDate(explained.date),
+        body:`<p class="schedule-explanation">${esc(explained.reply)}</p>`,foot:button('Закрыть','close-modal','primary')});
+    });
+  }
   if(node.dataset.action==='preview-apply') {
     const selected=previewSelected();
     if(S.preview.kind==='repair') {S.selectedVariant=selected.id;node.dataset.variant=selected.id;await applyRepair(node);}
@@ -267,8 +278,9 @@ function schedulePreviewBar() {
   const main=v.id===p.variants[0].id;
   const saved=p.kind==='saved-day';
   const manual=p.kind==='manual';
-  const proof=main && p.variants.length>1 && !manual && !v.unfulfilled?.length
-    ? `<p class="assistant-note">${v.search?.primaryProven && v.search?.scope==='all-rooms'?'Лучший вариант по заданным условиям.':'Основной вариант в подборе.'}</p>`:'';
+  const proven=v.search?.primaryProven && v.search?.scope==='all-rooms';
+  const proof=main && !manual && !v.unfulfilled?.length && (proven || p.variants.length>1)
+    ? `<p class="assistant-note">${proven?'Минимум перестановок подтверждён при заданных условиях.':'Основной вариант в подборе.'}</p>`:'';
   const classHours=v.stats?.classHours?`<p class="assistant-note">Классных часов: ${v.stats.classHours}${v.stats.classHourClasses>v.stats.classHours?' · классов: '+v.stats.classHourClasses:''}</p>`:'';
   const alerts=(v.warnings || []).filter(text=>text.startsWith('Классный час') || text.startsWith('Резервный вариант'));
   if(v.stats?.classGapDetails?.length)alerts.push('Окна: '+v.stats.classGapDetails.map(row=>`${row.className} — ${row.periods.join(', ')} ур.`).join('; '));
@@ -294,6 +306,7 @@ function schedulePreviewBar() {
     <div class="assistant-actions">
       <button type="button" class="btn primary" data-action="preview-apply" ${disabled}>${applyLabel}</button>
       ${saved?'':button('Сохранить как запасной','preview-save-version','', '',disabled)}
+      ${v.previewId?button('Объяснить вариант','preview-explain','ghost','',disabled):''}
       <button type="button" class="btn ghost" data-action="preview-cancel">${p.kind==='assistant'?'Вернуться к диалогу':p.kind==='technology'?'Вернуться к условиям':saved?'К списку вариантов':'Закрыть предпросмотр'}</button>
     </div>
   </section>`;

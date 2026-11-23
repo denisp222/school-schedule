@@ -27,6 +27,10 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
     if allow_room_changes is None:
         args=dict(state=state,day=day,variant=variant,teacher_ids=teacher_ids,baseline=baseline,excluded=excluded,conditions=conditions,_allow_drop=_allow_drop)
         if _limits:
+            bound=solve_day(**args,hint=hint,allow_room_changes='relaxed',_seconds=.5,_limits=_limits)
+            if bound:
+                projected=solve_day(**args,hint=hint,allow_room_changes=True,_seconds=.5,_placements=bound['placements'],_limits=_limits)
+                if projected:return projected
             fixed=solve_day(**args,hint=hint,allow_room_changes=False,_seconds=.7,_limits=_limits)
             return fixed or solve_day(**args,hint=hint,allow_room_changes=True,_seconds=1.6,_limits=_limits)
         def certificate(result,bound):
@@ -225,7 +229,8 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
     primary=sum(pupil_gaps)*gap_weight+sum(loss)*loss_weight+sum(younger_late)*late_weight+sum(moved)
     if _allow_drop:
         primary=sum(loss)*(len(pupil_gaps)+1)*loss_weight+sum(pupil_gaps)*loss_weight+sum(younger_late)*late_weight+sum(moved)
-    model.minimize(primary)
+    seek_alternative=bool(_limits and allow_room_changes=='relaxed')
+    if not seek_alternative:model.minimize(primary)
     if _limits:
         for key, expression in [('classGapsAfter',sum(pupil_gaps)),('lostHours',sum(loss)),
                                 ('youngerLate',sum(younger_late)),('moved',sum(moved))]:
@@ -250,11 +255,16 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
         if len(identical)==len(units):model.add(sum(identical)<=len(units)-1)
     solver=cp_model.CpSolver()
     configure(solver,_seconds if _seconds is not None else 1.2,7+variant)
+    if allow_room_changes=='relaxed':
+        # Assignment bounds from the linear relaxation keep the period search
+        # close to the original timetable. Room feasibility is verified next.
+        solver.parameters.linearization_level=2
+        solver.parameters.optimize_with_core=False
     # Use ordinary hint completion rather than the native hint-repair search:
     # OR-Tools 9.15 may abort there when presolve fixes the decision variables.
     solver.parameters.search_branching=cp_model.AUTOMATIC_SEARCH
-    solver.parameters.stop_after_first_solution=False
-    solver.parameters.repair_hint=False;solver.parameters.hint_conflict_limit=1000 if _incumbent else 0
+    solver.parameters.stop_after_first_solution=seek_alternative
+    solver.parameters.repair_hint=False;solver.parameters.hint_conflict_limit=1000 if _incumbent or seek_alternative else 0
     status=solver.solve(model)
     if status not in (cp_model.OPTIMAL,cp_model.FEASIBLE) and allow_room_changes!='relaxed':
         bootstrap=cp_model.CpSolver();configure(bootstrap,.25,7+variant)
@@ -264,7 +274,7 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
         if bootstrap_status in (cp_model.OPTIMAL,cp_model.FEASIBLE):
             solver=bootstrap;status=bootstrap_status
     if status not in (cp_model.OPTIMAL,cp_model.FEASIBLE):return None
-    primary_proven=status==cp_model.OPTIMAL
+    primary_proven=status==cp_model.OPTIMAL and not seek_alternative
     primary_value=int(round(solver.objective_value))
     search={'deterministic':True,'primaryProven':primary_proven,'scope':'all-rooms' if allow_room_changes else 'fixed-rooms',
             'objective':primary_value,'lowerBound':solver.best_objective_bound,'work':solver.response_proto.deterministic_time}
