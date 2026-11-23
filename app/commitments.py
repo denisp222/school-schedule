@@ -246,8 +246,9 @@ def room_busy(state, room_id, day, period):
     return bool(room_id) and any(row.get('roomId') == room_id for row in matching(state, day, period))
 
 
-def changes(state, day):
-    before={r['id']:r for r in matching({**state,'externalDays':{},'absences':[]},day,include_cancelled=True)}
+def changes(state, day, *, previous=None):
+    if previous is None:previous={**state,'externalDays':{},'absences':[]}
+    before={r['id']:r for r in matching(previous,day,include_cancelled=True)}
     after={r['id']:r for r in matching(state,day,include_cancelled=True)}
     fields=('teacherId','first','last','roomId','subjectId','cancelled')
     result=[]

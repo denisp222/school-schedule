@@ -16,6 +16,9 @@ _LESSON_NUMBER = _NUMBER+'|'+'|'.join(stem+r'\w*' for stem in _ORDINALS)
 _PERIOD = re.compile(r'(?<!\w)(' + _LESSON_NUMBER + r')\s+урок\w*')
 _RANGE = re.compile(r'(?<!\w)(' + _LESSON_NUMBER + r')\s*([-–—]|\bи\b|\bпо\b)\s*(' + _LESSON_NUMBER + r')(?!\w)')
 _FLEXIBLE = re.compile(r'позже|не\s+(?:только\s+|обязательно\s+)?перв\w*|на\s+люб\w*\s+урок')
+_INDIVIDUAL = re.compile(r'\b(?:индивидуальн\w*|инд[1-9]?(?=\s|\.|$))')
+_GRADE = re.compile(r'\b(1[01]|[1-9])(?:\s*-\s?(?:х|е|ых|й))?\s+класс\w*|\b(пят\w*|шест\w*|седьм\w*|восьм\w*|девят\w*|десят\w*)\s+класс\w*')
+_AFTER = re.compile(r'\bпосле\s+(' + _LESSON_NUMBER + r')\s+урок\w*')
 
 
 def _normalize(text):
@@ -135,7 +138,85 @@ def _absence(clause, refs):
     return {'type':'teacher_absence','teacherId':next(iter(refs['teachers'])),'first':first,'last':last}
 
 
-def verified_actions(state, day, messages):
+def school_day_actions(state,day,messages):
+    """Resolve the common explicit formulations against local records."""
+    from .display_labels import individual_labels
+    labels=individual_labels(state)
+    learners=state.get('individualLearners',[])
+    lessons=lessons_for_day(state,day)
+    pupil_actions,teacher_actions,teacher_windows,departures,pupil_questions={},{},{},{},{}
+    pupil_scopes=set()
+    for message in messages:
+        referenced_teacher=None
+        for clause in _clauses(message):
+            if re.search(r'\b(?:если|можно\s+ли|по\s+возможности)\b',clause):continue
+            refs=mentioned_entities(state,clause)
+            if _INDIVIDUAL.search(clause):
+                choices=[r for r in learners if r['classId'] in refs['classes']]
+                candidates={r['id'] for r in choices}
+                named=[r for r in learners if (stem:=surname_stem(_normalize(r['name']).split()[0])) and len(stem)>=3
+                       and re.search(r'(?<!\w)'+re.escape(stem)+r'[а-я]*(?!\w)',clause)]
+                number=re.search(r'\b(?:инд|индивидуальн\w*)\s*(?:№\s*)?([1-9])(?!\w)',clause)
+                if named:choices=[r for r in named if not refs['classes'] or r['classId'] in refs['classes']]
+                if number:choices=[r for r in choices if labels[r['id']].startswith('инд'+number[1]+' ')]
+                cancel=_CANCEL.search(clause) or re.search(r'\b(?:не\s+будет|нет\s+инд|отсутств\w*)\b',clause)
+                keep=re.search(r'\b(?:не\s+(?:отмен|сним|убир)\w*|остав\w*|будет\s+присутств\w*)\b',clause)
+                if not (cancel or keep) or _periods(clause) or _RANGE.search(clause):continue
+                pupil_scopes.update(candidates or {r['id'] for r in choices})
+                key=frozenset(refs['classes'])
+                if len(choices)==1:
+                    ident=choices[0]['id']
+                    pupil_questions.pop(key,None)
+                    pupil_actions[ident]=None if keep else {'type':'cancel_individual','learnerId':ident}
+                elif not keep and (choices or key):
+                    pupil_questions[key]=('Уточните, кого не будет: '+', '.join(labels[r['id']] for r in choices)+'.'
+                                          if choices else 'Проверьте класс и номер индивидуального ученика.')
+                continue
+            if len(refs['teachers'])==1:referenced_teacher=next(iter(refs['teachers']))
+            elif refs['teachers'] or not re.search(r'\b(?:ей|ему|у\s+нее|у\s+него)\b',clause):continue
+            if referenced_teacher is None:continue
+            teacher=referenced_teacher
+            grade_matches=_GRADE.findall(clause)
+            grade_stems=('пят','шест','седьм','восьм','девят','десят')
+            grades={int(number) if number else next(g for g,stem in enumerate(grade_stems,5) if word.startswith(stem))
+                    for number,word in grade_matches}
+            classes=refs['classes'] | {r['id'] for r in state['classes']
+                if (match:=re.match(r'\d+',r['name'])) and int(match[0]) in grades}
+            bounds=_RANGE.search(clause)
+            keeping=re.search(r'постав|остав|перенес|перенос|провод',clause)
+            only_classes=bool(re.search(r'\bтолько\s+(?:\d+\s*[а-яa-z](?!\w)|\d+\s+класс|пят\w*\s+класс|шест\w*\s+класс|седьм\w*\s+класс|восьм\w*\s+класс|девят\w*\s+класс|десят\w*\s+класс)',clause))
+            cancel_others=only_classes or ('остальн' in clause and bool(_CANCEL.search(clause)))
+            negated=re.search(r'\bне\s+(?:отмен|сним|убир)\w*',clause)
+            if (classes and bounds and (keeping or only_classes)
+                    and (not _CANCEL.search(clause) or keeping and 'остальн' in clause)):
+                first,last=_lesson_number(bounds[1]),_lesson_number(bounds[3])
+                if first<=last and (bounds[2]!='и' or last==first+1):
+                    teacher_windows[teacher]={'type':'teacher_lesson_window','teacherId':teacher,
+                                              'classIds':sorted(classes),'first':first,'last':last,
+                                              'cancelOtherClasses':cancel_others}
+                    if cancel_others:teacher_actions.pop(teacher,None)
+            elif not classes and 'остальн' in clause and _CANCEL.search(clause) and teacher in teacher_windows:
+                teacher_windows[teacher]['cancelOtherClasses']=not bool(negated)
+            elif classes and _CANCEL.search(clause) and not negated:
+                # Interpret grade-wide cancellation only when the request says
+                # which grade to remove, rather than which grade to keep.
+                if grades and not bounds and not keeping:
+                    if teacher in teacher_windows:teacher_windows[teacher]['cancelOtherClasses']=False
+                    teacher_actions[teacher]=[{'type':'cancel_lesson','lessonId':l['id']} for l in lessons
+                        if l['teacherIds']==[teacher] and set(l['classIds'])<=classes and not l.get('classHour')]
+            after=_AFTER.search(clause)
+            if after and re.search(r'уход\w*|уйд\w*|не\s+(?:будет|сможет|работа\w*)',clause):
+                period=_lesson_number(after[1])
+                if period<8:
+                    departures[teacher]={'type':'teacher_absence','teacherId':teacher,'first':period+1,'last':8}
+            if re.search(r'\b(?:отмен\w*\s+отсутствие|будет\s+(?:работать|весь\s+день))\b',clause) and not _AFTER.search(clause):
+                departures.pop(teacher,None)
+    return ([r for r in pupil_actions.values() if r]+[r for rows in teacher_actions.values() for r in rows]
+            +list(teacher_windows.values())+list(departures.values()),
+            list(pupil_questions.values()),set(teacher_actions)|teacher_windows.keys(),pupil_scopes)
+
+
+def verified_actions(state, day, messages, *, school_actions=None):
     current = lessons_for_day(state, day)
     sources = sources_for(current)
     subjects = {s['id']:s for s in state['subjects']}
@@ -179,14 +260,16 @@ def verified_actions(state, day, messages):
         retired.extend(completed)
         joins = [old for old in joins if old not in completed]
         cancels.update(new_cancels)
-    return [*joins, *cancels.values(), *absences.values()], retired
+    if school_actions is None:school_actions=school_day_actions(state,day,messages)[0]
+    return [*joins, *cancels.values(), *absences.values(), *school_actions], retired
 
 
 def ground_reply(raw, state, day, messages):
     if not isinstance(raw, dict) or raw.get('date')!=day:return raw
     if any(not isinstance(raw.get(key), list) for key in ('actions','questions','unsupported')):return raw
-    actions, retired = verified_actions(state, day, messages)
-    if not actions:return raw
+    explicit,pupil_questions,teacher_scopes,pupil_scopes=school_day_actions(state,day,messages)
+    actions, retired = verified_actions(state, day, messages,school_actions=explicit)
+    if not (actions or pupil_questions or pupil_scopes or teacher_scopes):return raw
     lessons = lessons_for_day(state, day)
     sources = sources_for(lessons)
     subjects = {row['id']:row for row in state['subjects']}
@@ -194,6 +277,8 @@ def ground_reply(raw, state, day, messages):
     joined_ids = {ident for row in joins for ident in row['lessonIds']}
     cancelled_ids = {row['lessonId'] for row in actions if row['type']=='cancel_lesson'}
     absence_ids = {row['teacherId'] for row in actions if row['type']=='teacher_absence'}
+    learners = {row['learnerId'] for row in actions if row['type']=='cancel_individual'}
+    windows = {row['teacherId']:row for row in actions if row['type']=='teacher_lesson_window'}
     joint_classes = [{c for ident in row['lessonIds'] for c in sources[ident]['classIds']} for row in joins+retired]
     cancel_classes = {
         pattern:{c for l in lessons if l['id'] in cancelled_ids and pattern.search(_normalize(subjects[l['subjectId']]['name']))
@@ -207,7 +292,22 @@ def ground_reply(raw, state, day, messages):
         if kind=='join_lessons' and isinstance(row.get('lessonIds'), list):
             return any(ident in joined_ids or ident in cancelled_ids for ident in row['lessonIds'] if isinstance(ident, str))
         if kind in ('pin_lesson', 'cancel_lesson') and isinstance(row.get('lessonId'), str):
-            return row['lessonId'] in joined_ids or row['lessonId'] in cancelled_ids
+            lesson=sources.get(row['lessonId'])
+            redundant=kind=='cancel_lesson' and lesson and any(
+                t in windows and windows[t]['cancelOtherClasses'] and not set(lesson['classIds']).intersection(windows[t]['classIds'])
+                for t in lesson['teacherIds'])
+            mistaken_group=kind=='cancel_lesson' and lesson and (pupil_scopes or pupil_questions) and any(
+                l['classId'] in lesson['classIds'] for l in state.get('individualLearners',[])
+                if l['id'] in pupil_scopes or pupil_questions)
+            if mistaken_group:
+                mistaken_group=not any(
+                    not _INDIVIDUAL.search(clause) and _CANCEL.search(clause)
+                    and (set(lesson['classIds'])<=refs['classes'] or lesson['subjectId'] in refs['subjects'] and not refs['classes'])
+                    for message in messages for clause in _clauses(message)
+                    if (refs:=mentioned_entities(state,clause)))
+            return row['lessonId'] in joined_ids or row['lessonId'] in cancelled_ids or redundant or mistaken_group
+        if kind=='cancel_individual':return row.get('learnerId') in pupil_scopes or bool(pupil_questions)
+        if kind=='teacher_lesson_window':return row.get('teacherId') in teacher_scopes
         return kind=='teacher_absence' and isinstance(row.get('teacherId'), str) and row['teacherId'] in absence_ids
 
     def superseded(value):
@@ -216,6 +316,10 @@ def ground_reply(raw, state, day, messages):
         refs = mentioned_entities(state, text)['classes']
         relevant_joint = any(refs <= classes for classes in joint_classes) if refs else bool(joint_classes) and _ROV.search(text)
         if re.search(r'вместим|вмеща|кабинет\w*\s+занят|нов\w*\s+групп|учебн\w*\s+план',text):return False
+        if (learners or pupil_questions) and _INDIVIDUAL.search(text) and (pupil_questions or re.search(r'отмен|нет|не\s+поддерж|не\s+найд|нельзя',text)):
+            return True
+        if windows.keys() & mentioned_entities(state,text)['teachers'] and re.search(r'правил|услови|класс',text) and _RANGE.search(text):
+            return True
         if relevant_joint:
             if re.search(r'только\s+перв|перв\w*\s+урок\w*\s+(?:уже\s+)?занят|не\s+преподавател|не\s+ведет|протокол\w*\s+не|двух\s+класс|тр[её]х\s+класс|произвольн\w*\s+замен', text):
                 return True
@@ -230,6 +334,7 @@ def ground_reply(raw, state, day, messages):
     result['actions'].extend(row for row in actions if row not in result['actions'])
     for key in ('questions','unsupported'):
         result[key] = [text for text in raw[key] if not superseded(text)]
+    result['questions'].extend(q for q in pupil_questions if q not in result['questions'])
     if (result['questions']!=raw['questions'] or result['unsupported']!=raw['unsupported']
             or any(row not in raw['actions'] for row in actions)):
         teachers={t['id']:t['name'] for t in state['teachers']}

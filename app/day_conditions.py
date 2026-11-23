@@ -1,10 +1,19 @@
 """Slot conditions shared by daily proposals and independent acceptance."""
 
 
+def teacher_window_allows(row,lesson,period):
+    if lesson.get('classHour') or row['teacherId'] not in lesson['teacherIds']:return True
+    assigned,selected=set(lesson['classIds']),set(row['classIds'])
+    if row.get('cancelOtherClasses') and not assigned<=selected:return False
+    return not (assigned & selected) or row['first']<=period<=row['last']
+
+
 def problems(state,day,actions,after):
     from .model import student_groups,lessons_for_day
     errors=[];sources=None
     for row in actions:
+        if row['type']=='teacher_lesson_window' and any(not teacher_window_allows(row,l,l['period']) for l in after):
+            errors.append('Не выполнено ограничение по классам или времени уроков учителя.')
         if row['type'] in ('class_day','group_day'):
             overridden={a['groupIndex'] for a in actions if a['type']=='group_day' and a['classId']==row['classId']}
             groups=[row['groupIndex']] if row['type']=='group_day' else [g for g in (0,1) if g not in overridden]

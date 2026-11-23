@@ -46,6 +46,112 @@ def recorded_plan(store,teacher='a'):
     return {'threadId':thread,'turnId':turn}
 
 
+DAY_WINDOW='2026-11-25'
+
+
+def window_school():
+    state=school()
+    state['teachers'][0]['name']='Альфова Т.Т.'
+    state['classes'].append({'id':'ninth','name':'9б'})
+    state['individualLearners']=[
+        {'id':'pupil-1','name':'Тестовый Ученик','classId':'ninth','allowGaps':True},
+        {'id':'pupil-2','name':'Примерный Ученик','classId':'a','allowGaps':True},
+    ]
+    state['baseLessons']=[
+        {'id':f'fifth-{period}','day':2,'period':period,'classIds':['b'],'subjectId':'math',
+         'teacherIds':['a' if period>4 else 'b'],'roomIds':['r1' if period>4 else 'r2']}
+        for period in range(1,7)]
+    state['baseLessons'] += [
+        {'id':f'ninth-{period}','day':2,'period':period,'classIds':['ninth'],'subjectId':'math',
+         'teacherIds':['a' if period==3 else 'free'],'roomIds':['r1' if period==3 else 'r3']}
+        for period in range(1,4)]
+    state['externalActivities']=[
+        {'id':ident,'kind':'individual','label':'Индивидуальное занятие','learnerId':pupil,
+         'subjectId':'math','teacherId':teacher,'roomId':room,'weekday':2,'first':period,'last':period,
+         'allowEighth':period==8}
+        for ident,pupil,teacher,room,period in [('early','pupil-1','a','r1',1),
+                                               ('late','pupil-1','free','r3',8),
+                                               ('other','pupil-2','a','r1',2)]
+    ]
+    return normalize_state(state)
+
+
+def test_mixed_dialogue_can_cancel_individuals_limit_teacher_and_export_all_outputs(tmp_path,monkeypatch):
+    from app import assistant_api
+    from app.commitments import matching
+    store=Store(tmp_path/'schedule-test.sqlite3',window_school)
+    monkeypatch.setattr(server,'store',store)
+    client=TestClient(server.app)
+    note='Отдельный вопрос о другом дне.'
+    fake_key='sk-or-v1-'+'testing'*8
+
+    class Model:
+        def status(self):
+            return {'paidEnabled':True,'provider':'deepseek','model':'deepseek-chat'}
+
+        def interpret(self,messages,**options):
+            context=messages[0]['content']
+            assert 'Тестовый Ученик' not in context
+            assert 'pupil-1' in context and 'инд 9б' in context
+            return {'date':DAY_WINDOW,'reply':'Проверьте условия. '+fake_key,'actions':[
+                {'type':'cancel_lesson','lessonId':'ninth-1'},
+                {'type':'unknown_action'},
+            ],'questions':[],'unsupported':['Отмена индивидуальных занятий 9б недоступна.',note]}, 'model'
+
+    monkeypatch.setattr(assistant_api,'connection',lambda:Model())
+    result=post(client,'/assistant/interpret',{'revision':1,'date':DAY_WINDOW,
+        'message':'Не будет индивидуальника 9б. Альфовой поставить с 1 по 4 уроки только 5 классы, остальные ей снять.'})
+    assert {r['type'] for r in result['actions']}=={'cancel_individual','teacher_lesson_window'}
+    assert result['unsupported']==[note] and result['questions']
+    assert not result['draftId'] and result['partialDraftId']
+    assert client.post('/api/assistant/preview',json={'revision':1,'draftId':result['partialDraftId']}).status_code==422
+
+    recorded={k:result[k] for k in ('threadId','turnId')}
+    monkeypatch.setattr(assistant_api,'connection',lambda:pytest.fail('Подбор по истории выполняется локально'))
+    preview=post(client,'/assistant/replay',{'revision':1,**recorded,'confirmedOnly':True})
+    option=preview['variants'][0]
+    assert store.read()['revision']==1
+    assert note in option['unfulfilled']
+    assert option['stats']['externalCancelled']==2
+    assert {r['id'] for r in option['day']['externalChanges']}=={'early','late'}
+    assert {r['id'] for r in option['day']['externalActivities'] if r['cancelled']}=={'early','late'}
+    assert 'ninth-1' in {r['id'] for r in option['after']}
+    taught=[r for r in option['after'] if 'a' in r['teacherIds']]
+    assert len(taught)==2 and all(r['classIds']==['b'] and r['period']<=4 for r in taught)
+
+    saved=post(client,'/assistant/apply',{'revision':1,'previewId':option['previewId']})
+    assert {r['id'] for r in matching(saved['state'],DAY_WINDOW)}=={'other'}
+    assert {r['id'] for r in matching(saved['state'],'2026-12-02')}=={'early','late','other'}
+    assert any(r['id']=='ninth-3' for r in lessons_for_day(saved['state'],'2026-12-02'))
+    export=client.get('/api/assistant/conversations-export')
+    assert export.status_code==200 and 'attachment' in export.headers['content-disposition']
+    turn=export.json()['conversations'][0]['turns'][0]
+    assert turn['status']=='applied' and turn['response']['unsupported']==[note]
+    assert {'actions','labels','questions','events'}<=turn['response'].keys()
+    assert [r['kind'] for r in turn['response']['events']]==['preview','applied']
+    assert fake_key not in export.text
+
+
+def test_individual_aliases_require_disambiguation_and_teacher_scope_can_be_corrected():
+    from app.day_request import ground_reply
+    state=window_school()
+    state['individualLearners'].append({'id':'pupil-3','name':'Другой Ученик','classId':'ninth'})
+    raw={'date':DAY_WINDOW,'reply':'','questions':[],'unsupported':[],'actions':[
+        {'type':'cancel_individual','learnerId':'pupil-1'},
+        {'type':'teacher_lesson_window','teacherId':'a','classIds':['b'],'first':1,'last':4},
+    ]}
+    old='Альфовой поставить с 1 по 4 уроки только 5 классы.'
+    corrected='Снять только девятые классы у Альфовой. Альфова уходит после четвёртого урока.'
+    actual=ground_reply(raw,state,DAY_WINDOW,[old,corrected,'Отменить все уроки у индивидуальника 9б.'])
+    assert 'инд1 9б, инд2 9б' in actual['questions'][0]
+    assert actual['actions']==[{'type':'cancel_lesson','lessonId':'ninth-3'},
+                               {'type':'teacher_lesson_window','teacherId':'a','classIds':['b'],'first':1,'last':4,'cancelOtherClasses':False},
+                               {'type':'teacher_absence','teacherId':'a','first':5,'last':8}]
+    resolved=ground_reply(raw,state,DAY_WINDOW,[old,corrected,'Не будет инд2 9б.'])
+    assert {'type':'cancel_individual','learnerId':'pupil-3'} in resolved['actions']
+    assert not any(r.get('learnerId')=='pupil-1' for r in resolved['actions'])
+
+
 def test_repeats_a_saved_conversation_without_a_model_and_checks_the_revision(desk,monkeypatch):
     from app import assistant_api
     client,store=desk

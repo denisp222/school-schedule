@@ -42,6 +42,10 @@ function renderAssistantSettings() {
         <div class="assistant-actions"><button class="btn ghost" type="button" data-action="assistant-probe" ${disabled?'disabled':''}>Проверить модель</button>${active && configured?button('Удалить ключ','assistant-remove-key','ghost'):''}</div>
       </details>
     </form>
+    <div class="assistant-history-export">
+      ${button('Экспорт истории диалогов','assistant-export-history','ghost','download',a.pending?'disabled':'')}
+      <p class="assistant-note">Файл содержит переписку, распознанные условия, уточнения и результаты подбора.</p>
+    </div>
     ${a.connectionMessage?`<p role="status" class="assistant-note assistant-status">${esc(a.connectionMessage)}</p>`:''}
     ${a.connectionError?`<div role="alert">${notice(a.connectionError,'error')}</div>`:''}
   </section>`;
@@ -60,6 +64,8 @@ function assistantConditionLabel(row) {
   if(row.type==='join_lessons') return `Совместный урок ${row.period}: ${nameOf('teachers',row.teacherId)}`;
   if(row.type==='allow_eighth') return 'Разрешён восьмой урок для указанного занятия на эту дату';
   if (row.type === 'teacher_absence') return `${nameOf('teachers', row.teacherId)}: отсутствие, уроки ${row.first}–${row.last}`;
+  if (row.type === 'cancel_individual') return `${individualLabel(row.learnerId)}: отмена индивидуальных занятий на этот день`;
+  if (row.type === 'teacher_lesson_window') return `${nameOf('teachers',row.teacherId)}: ${row.classIds.map(id=>nameOf('classes',id)).join(', ')} на уроках ${row.first}–${row.last}${row.cancelOtherClasses?', остальные обычные уроки отменить':''}`;
   if (row.type === 'class_day') return `${nameOf('classes', row.classId)}: начало ${row.first}-м уроком, окончание не позже ${row.last}-го`;
   if (row.type === 'room_unavailable') return `Кабинет ${nameOf('rooms', row.roomId)} недоступен, уроки ${row.first}–${row.last}`;
   const lesson = [...lessonsFor(S.ai.date), ...S.data.baseLessons, ...(S.data.dayBases[S.ai.date] || [])].find(l => l.id === row.lessonId);
@@ -78,6 +84,7 @@ function renderAssistant() {
   if (!a.status) { ensureAssistantStatus(); return `<div class="page">${pageHead('', 'AI-помощник', 'Загружаем подключение…')}</div>`; }
   const ready = a.status.configured;
   const response = a.response;
+  const needsReview = response?.questions?.length || response?.unsupported?.length;
   const currentConditions = S.data.assistantConditions?.[a.date] || [];
   return `<div class="page assistant-page">
     ${pageHead('', 'AI-помощник', 'Помощь по программе, данные школы и изменения расписания.', button('Настройки', 'assistant-settings', 'ghost', 'settings'))}
@@ -89,11 +96,14 @@ function renderAssistant() {
         ${a.messages.map(m => `<article class="assistant-message ${m.role === 'user' ? 'from-user' : ''}"><strong>${m.role === 'user' ? 'Вы' : 'AI-помощник'}</strong><p>${esc(m.text || m.content)}</p></article>`).join('')}
       </div>
       ${response?.program ? renderProgramResponse(response.program) : ''}${response && !response.program ? `<section class="assistant-understood" aria-labelledby="assistant-understood-title">
-        <h2 id="assistant-understood-title">${response.questions.length || response.unsupported.length?'Нужно уточнить':'Проверьте условия'}</h2>
+        <h2 id="assistant-understood-title">${needsReview?'Нужно уточнить':'Проверьте условия'}</h2>
         ${response.questions.map(s => notice(s, 'warn')).join('')}
-        ${response.unsupported.map(s => notice('Пока не поддерживается: ' + s, 'warn')).join('')}
+        ${response.unsupported.map(s => notice(s, 'warn')).join('')}
         ${response.labels.length ? `<details ${response.labels.length<6?'open':''}><summary>Условия: ${response.labels.length}</summary><ul>${response.labels.map(s => `<li>${esc(s)}</li>`).join('')}</ul></details>` : ''}
-        ${response.draftId && !a.preview ? `<button class="btn primary" type="button" data-action="assistant-preview" ${a.pending ? 'disabled' : ''}>Условия верны, подобрать варианты</button>` : ''}
+        ${!a.preview?.variants?.length && a.replay ? `
+          ${needsReview?'<p class="assistant-note">Подбор учтёт условия из списка. Пункты выше останутся на проверку.</p>':''}
+          ${button(needsReview?'Подобрать по подтверждённым условиям':'Условия верны, подобрать варианты',
+                  needsReview?'assistant-replay':'assistant-preview','primary','',a.pending?'disabled':'')}` : ''}
       </section>` : ''}
       ${assistantPreview()}
       ${a.replay && !response ? `<section class="assistant-understood">
@@ -112,7 +122,7 @@ function renderAssistant() {
       ${a.error ? `<div role="alert">${notice(a.error, 'error')}</div>` : ''}
       <details class="assistant-capabilities"><summary>Что помощник умеет сейчас</summary>
         <p>Помощь по программе, поиск нужного раздела, просмотр нагрузки, объяснение ограничений и подготовка изменений справочников. Доступность учителя, классное руководство, кабинет, норма часов и сокращения предметов меняются после вашего подтверждения. Справка и просмотр нагрузки работают без платного запроса.</p>
-        <p>Отсутствие учителя на весь день или отдельные уроки, точное время начала и предельное время окончания занятий класса, закрепление существующего урока, закрытие кабинета, явная отмена урока.</p>
+        <p>Отсутствие учителя, уроки учителя только у выбранных классов и в заданное время, отмена всех индивидуальных занятий ученика на дату, время занятий класса, закрепление и отмена урока, закрытие кабинета.</p>
         <p>«Разговоры о важном» обычно идут первым уроком понедельника. На выбранную дату можно указать другой урок и объединить несколько классов в одном кабинете. Спаренные уроки идут подряд у каждой подгруппы.</p>
         <p>Совместный урок двух классов у одного из их преподавателей. Для технологии можно отдельно согласовать объединение подгрупп и время их прихода. У каждой подгруппы занятия идут без окон; окна учителей допускаются. Восьмой урок только по явному разрешению на выбранную дату.</p>
         <p>Микрофон рядом с отправкой записывает голос. Речь распознаётся на компьютере, затем выбранный AI-сервис оформляет текст. Перед отправкой сообщения его можно проверить и исправить.</p>
@@ -150,7 +160,7 @@ async function sendAssistant(form) {
     const result=await api('/assistant/interpret',{revision:S.revision,date:a.date,message,threadId:a.threadId,programContext:!!(a.response?.program||a.programContext),
       history:a.messages.filter(m=>!m.error && !m.notice).slice(-10).map(({role,content})=>({role,content}))});
     a.threadId=result.threadId;a.programContext=!!result.program;
-    if(result.draftId)a.replay={id:result.turnId,labels:result.labels};
+    a.replay=result.actions?.length?{id:result.turnId,labels:result.labels}:null;
     a.messages.push({role: 'user', content: message});
     const content = JSON.stringify({ date: result.date, reply: result.reply, actions: result.actions,
       questions: result.questions, unsupported: result.unsupported });
@@ -192,8 +202,9 @@ async function openAssistantThread(id) {
     if(turn.response) {const r=turn.response;a.messages.push({role:'assistant',content:JSON.stringify({date:r.date,reply:r.reply,actions:r.actions,questions:r.questions,unsupported:r.unsupported}),text:r.reply+(turn.status==='applied'?'\nВариант сохранён.':'')});}
     else a.messages.push({role:'assistant',content:turn.error || 'Запрос не завершён.',error:true,text:turn.error || 'Запрос не завершён.'});
   }
-  const last=[...thread.turns].reverse().find(({response:r})=>r?.actions?.length && !r.questions?.length && !r.unsupported?.length);
-  if(last)a.replay={id:last.id,labels:last.response.labels};
+  const last=thread.turns.at(-1);
+  if(last?.response?.actions?.length)a.replay={id:last.id,labels:last.response.labels};
+  if(last?.response && last.status!=='applied')a.response={questions:[],unsupported:[],labels:[],...last.response};
   render();
 }
 
@@ -265,6 +276,8 @@ function schedulePreviewBar() {
   const warnings=alerts.map(text=>notice(text,'warn')).join('');
   const title=saved?v.title:manual?'Ручная перестановка':p.variants.length>1?'Выберите вариант':v.title||'Вариант расписания';
   const changes=v.changes || v.day?.changes || [];
+  const external=v.day?.externalChanges || [];
+  const cancelledExternal=external.filter(c=>c.before && !c.before.cancelled && c.after?.cancelled);
   const unmet=v.unfulfilled?.length
     ? `<div class="notice warn"><div><strong>Условия, которые требуют проверки</strong><ul>${v.unfulfilled.map(text=>`<li>${esc(text)}</li>`).join('')}</ul></div></div>`:'';
   const disabled=S.ai.pending?'disabled':'';
@@ -273,9 +286,11 @@ function schedulePreviewBar() {
     <div class="preview-heading"><h2>${esc(title)}</h2><span>Предпросмотр</span></div>
     ${proof}${classHours}${warnings}${unmet}
     ${p.variants.length>1?`<div class="variant-strip">${p.variants.map((row,i)=>`<button type="button" class="variant-card ${row.id===v.id?'active':''}" data-action="preview-variant" data-id="${esc(row.id)}" aria-pressed="${row.id===v.id}">
-      <span class="v-title">${i===0?'Основной вариант':'Вариант '+(i+1)}</span><span>${row.stats?.moved || 0} переставлено · ${row.stats?.cancelled || 0} отменено${row.stats?.groupLosses ? ' · занятий подгрупп отменено: '+row.stats.groupLosses : ''}${row.stats?.classGapsAfter?' · есть окна':''}${row.stats?.joined?' · совместных: '+row.stats.joined:''}</span></button>`).join('')}</div>`:''}
+      <span class="v-title">${i===0?'Основной вариант':'Вариант '+(i+1)}</span><span>${row.stats?.moved || 0} переставлено · ${row.stats?.cancelled || 0} отменено${row.stats?.externalCancelled?' · дополнительных уроков снято: '+row.stats.externalCancelled:''}${row.stats?.groupLosses ? ' · занятий подгрупп отменено: '+row.stats.groupLosses : ''}${row.stats?.classGapsAfter?' · есть окна':''}${row.stats?.joined?' · совместных: '+row.stats.joined:''}</span></button>`).join('')}</div>`:''}
     ${changes.length?`<details class="preview-diff" ${manual?'open':''}><summary>Изменения (${changes.length})</summary><div class="change-list">${changes.map(changeRow).join('')}</div></details>`
-    :'<p class="assistant-note">Занятия остаются на своих местах.</p>'}
+    :!external.length?'<p class="assistant-note">Занятия остаются на своих местах.</p>':''}
+    ${cancelledExternal.length?`<details class="preview-diff" open><summary>Отменённые дополнительные занятия (${cancelledExternal.length})</summary>
+      <ul>${cancelledExternal.map(({before:r})=>`<li>${esc(r.kind==='individual'?individualLabel(r.learnerId):r.label)} · ${esc(nameOf('teachers',r.teacherId))} · ${r.first===r.last?r.first:r.first+'–'+r.last} ур.</li>`).join('')}</ul></details>`:''}
     <div class="assistant-actions">
       <button type="button" class="btn primary" data-action="preview-apply" ${disabled}>${applyLabel}</button>
       ${saved?'':button('Сохранить как запасной','preview-save-version','', '',disabled)}
@@ -320,6 +335,8 @@ document.addEventListener('click', async e => {
   }
   if(action==='assistant-more-history') {try {const result=await api('/assistant/conversations?offset='+a.history.length);a.history.push(...result.conversations);a.historyMore=result.hasMore;render();}catch(error){toast(error.message,'error');}return;}
   if(action==='assistant-hide-spending') {a.showSpending=false;render();return;}
+  if(action==='assistant-export-history')return assistantWork('Готовим историю диалогов…',
+    ()=>downloadFile('/api/assistant/conversations-export','История AI-помощника.json'),true);
   if(action==='assistant-open-thread') {try{await openAssistantThread(node.dataset.id);}catch(error){toast(error.message,'error');}return;}
   if(action==='assistant-show-preview') {await showSchedulePreview('assistant',a.date,a.preview.variants,a.selected);return;}
   if (action === 'assistant-settings') {
@@ -357,17 +374,11 @@ document.addEventListener('click', async e => {
     a.status = await api('/assistant/settings', {removeKey: true, model: a.status.model});
     a.connectionMessage = 'Ключ удалён с этого компьютера.';
   }, true);
-  if (action === 'assistant-replay') return assistantWork('Подбираем расписание по условиям из диалога…', async () => {
-    a.preview=await withScheduleCalculation('Подбираем расписание', () =>
-      api('/assistant/replay',{revision:S.revision,threadId:a.threadId,turnId:a.replay.id}));
-    a.selected=a.preview.variants[0]?.id ?? 0;
-    if(a.preview.variants.length)await showSchedulePreview('assistant',a.preview.date,a.preview.variants,a.selected,a.preview.revision);
-  });
-  if (action === 'assistant-preview') return assistantWork('Подбираем расписание…', async () => {
+  if (action === 'assistant-preview' || action === 'assistant-replay') return assistantWork('Подбираем расписание…', async () => {
     a.preview = await withScheduleCalculation('Подбираем расписание', () =>
-      api('/assistant/preview', {revision: a.response.revision, draftId: a.response.draftId}));
+      api('/assistant/replay',{revision:S.revision,threadId:a.threadId,turnId:a.replay.id,confirmedOnly:action==='assistant-replay'}));
     a.selected = a.preview.variants[0]?.id ?? 0;
-    if(a.preview.variants.length)await showSchedulePreview('assistant',a.date,a.preview.variants,a.selected,a.preview.revision);
+    if(a.preview.variants.length)await showSchedulePreview('assistant',a.preview.date,a.preview.variants,a.selected,a.preview.revision);
   });
   if (action === 'assistant-apply') return assistantWork('Сохраняем выбранный вариант…', async () => {
     const result = await api('/assistant/apply', {revision: a.preview.revision, previewId: assistantSelected().previewId});

@@ -137,6 +137,8 @@ p { margin: 0; }
 
 .nav {
   display: flex; flex-direction: column; gap: 3px; overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding-inline-end: 12px;
   scrollbar-width: thin;
   scrollbar-color: #7c7f93 transparent;
 }
@@ -978,7 +980,7 @@ dialog::backdrop {
   .app-shell { display: block; }
   .sidebar { position: fixed; left: 0; right: 0; bottom: 0; top: auto; z-index: 40; height: 58px; flex-direction: row; padding: 5px 8px; }
   .brand, .nav-label, .sidebar-foot { display: none; }
-  .nav { flex-direction: row; align-items: center; width: 100%; overflow: auto hidden; scrollbar-width: none; }
+  .nav { flex-direction: row; align-items: center; width: 100%; overflow: auto hidden; scrollbar-width: none; scrollbar-gutter: auto; padding-inline-end: 0; }
   .nav .nav-link { min-height: 44px; flex: 0 0 46px; }
   .content { height:100dvh;min-height:0;padding-bottom:58px; }
   .topbar { height: 50px; padding: 0 14px; }
@@ -1113,9 +1115,10 @@ dialog::backdrop {
 .assistant-workspace { max-width: 920px; }
 .assistant-layout { display:grid;grid-template-columns:220px minmax(0,1fr);gap:28px;align-items:start; }
 .assistant-layout .assistant-workspace { min-width:0;width:100%; }
-.conversation-sidebar { position:sticky;top:0;max-height:calc(100vh - 175px);overflow-y:auto;padding:0 18px 12px 0;border-right:1px solid var(--line); }
-.conversation-heading { display:grid;gap:12px;margin-bottom:14px; }
+.conversation-sidebar { position:sticky;top:0;max-height:calc(100vh - 175px);display:flex;flex-direction:column;border-right:1px solid var(--line); }
+.conversation-heading { display:grid;gap:12px;padding:0 18px 12px 0; }
 .conversation-heading h2 { font:650 16px var(--font);margin:0; }
+.conversation-list { min-height:0;overflow-y:auto;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent;padding:0 12px 12px 0; }
 .conversation-sidebar .assistant-history-row { display:block;margin:3px 0;border:0;border-radius:8px;padding:10px;text-align:left; }
 .conversation-sidebar .assistant-history-row:hover { background:var(--card-2); }
 .conversation-sidebar .assistant-history-row.active { background:var(--paper-2); }
@@ -1159,6 +1162,7 @@ dialog::backdrop {
 .assistant-settings .assistant-note { margin:0; }
 .assistant-settings .assistant-actions { margin-top:0; }
 .assistant-settings .assistant-budget { max-width:220px; }
+.assistant-history-export { display:grid;justify-items:start;gap:8px;margin-top:20px;padding-top:18px;border-top:1px solid var(--line); }
 .assistant-links { display:flex;flex-wrap:wrap;gap:10px; }
 .assistant-status { margin-top:20px!important; }
 .assistant-understood .assistant-note { margin-top:16px; }

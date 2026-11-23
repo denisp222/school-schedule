@@ -570,7 +570,9 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
                         candidates=[l for l in base_rows+day_rows if item.classId in l['classIds']]
                         if not any(l['id'] in permit_ids or l.get('eighthOn')==day or is_eighth_exception(state,l) and parse_date(day).weekday()==eighth_exception(state)['day'] for l in candidates):raise ValueError()
                     if item.type=='join_lessons' and any(i not in lesson_ids for i in item.lessonIds):raise ValueError()
-                    if item.type=='allow_technology' and (len(item.classIds)!=len(set(item.classIds)) or any(c not in ids['classes'] for c in item.classIds)):
+                    if item.type in ('allow_technology','teacher_lesson_window') and (len(item.classIds)!=len(set(item.classIds)) or any(c not in ids['classes'] for c in item.classIds)):
+                        raise ValueError()
+                    if item.type=='cancel_individual' and not any(r['id']==item.learnerId for r in state.get('individualLearners',[])):
                         raise ValueError()
                     if item.type=='join_technology':
                         from .technology import resolve_source
@@ -699,6 +701,8 @@ def indexes(state: dict) -> dict:
     # A search index lives for one unchanged school state. Validate the fixed
     # exception once, rather than rebuilding reference sets for every slot.
     result['_eighthRule']=eighth_exception(state)
+    result['_teacherWindows']={day:windows for day,rows in state.get('assistantConditions',{}).items()
+                               if (windows:=tuple(r for r in rows if r['type']=='teacher_lesson_window'))}
     return result
 
 
@@ -781,6 +785,9 @@ def slot_feasible(state,lesson,weekday,period,*,date=None,index=None,check_rooms
     subject=ix['subjects'].get(lesson.get('subjectId'))
     if subject and subject.get('unavailable') and unavailable(subject,weekday,period):return False
     if not subject or not subject_time_allowed(subject,lesson,weekday,period,date):return False
+    if ix.get('_teacherWindows') and date is not None:
+        from .day_conditions import teacher_window_allows
+        if any(not teacher_window_allows(r,lesson,period) for r in ix['_teacherWindows'].get(str(date),())):return False
     key=date if date is not None else weekday
     for cid in lesson.get('classIds',[]):
         record=ix['classes'].get(cid)

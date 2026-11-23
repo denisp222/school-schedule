@@ -1,6 +1,7 @@
 """Two-phase assistant API: interpret, calculate, then explicitly apply."""
 from copy import deepcopy
 from functools import lru_cache
+import json
 from threading import Lock
 from time import monotonic
 from uuid import uuid4
@@ -10,7 +11,7 @@ from fastapi import APIRouter
 from .ai_service import AssistantError, OpenRouter
 from . import ai_planner
 from .store import Conflict
-from .assistant_history import AssistantHistory
+from .assistant_history import AssistantHistory, redact
 from .previews import PreviewStore
 
 router = APIRouter(prefix='/api/assistant')
@@ -45,6 +46,16 @@ def history():return AssistantHistory(context().store)
 def conversations(offset:int=0):
     rows=history().list(offset)
     return {'conversations':rows,'hasMore':len(rows)==100}
+
+
+@router.get('/conversations-export')
+def export_conversations():
+    from .version import VERSION
+    server=context()
+    data={'schemaVersion':1,'appVersion':VERSION,'exportedAt':server.store.now(),'conversations':redact(history().export())}
+    filename=f'История AI-помощника {server.school_today()}.json'
+    return server.attachment(json.dumps(data,ensure_ascii=False,indent=2).encode('utf-8'),
+                             'application/json',filename)
 
 
 @router.get('/conversations/{thread_id}')
@@ -137,10 +148,13 @@ def interpret(body: dict):
         history().finish(turn_id,error='Не удалось обработать просьбу по программе. Данные не изменены.',status='error')
         raise
     if program is not None:return program
+    log=history()
+    thread=log.get(body['threadId']) if body.get('threadId') else None
+    if thread and thread['date']!=day:raise ValueError('Диалог относится к другой дате. Начните новый диалог.')
+    past=[{'role':'user','content':turn['request']} for turn in thread['turns']] if thread else body.get('history',[])
     assistant=connection();status=assistant.status()
     messages=ai_planner.messages_for(current['state'],day,body.get('message'),body.get('history',[]),
-                                     full_context=status['paidEnabled'])
-    log=history()
+                                     full_context=status['paidEnabled'],verified_history=past)
     thread_id,turn_id=log.start(body.get('threadId'),day,body.get('message'))
     try:
         from .absence_request import parse_absence_request
@@ -148,9 +162,9 @@ def interpret(body: dict):
                if not body.get('history') and not body.get('threadId') else None)
         if local is not None:raw,model=local,'Локальный разбор'
         else:raw,model=assistant.interpret(messages,expected_provider=status['provider'],expected_model=status['model'])
-        raw=ai_planner.ground_joint_refusal(raw,current['state'],day,body.get('message',''),body.get('history',[]))
-        text='\n'.join(r['content'] for r in body.get('history',[]) if r.get('role')=='user')+'\n'+body.get('message','')
-        draft,labels=ai_planner.validate_interpretation(raw,current['state'],day,text)
+        raw=ai_planner.ground_joint_refusal(raw,current['state'],day,body.get('message',''),past)
+        text='\n'.join(r['content'] for r in past if r.get('role')=='user')+'\n'+body.get('message','')
+        draft,labels=ai_planner.review_interpretation(raw,current['state'],day,text)
         from .search_policy import canonical_actions
         draft['actions']=canonical_actions(draft['actions'])
     except Exception as exc:
@@ -162,9 +176,10 @@ def interpret(body: dict):
     except Conflict:
         log.finish(turn_id,error='Расписание изменилось во время запроса. Повторите просьбу.',status='stale')
         raise
-    ready = bool(draft['actions']) and not draft['questions'] and not draft['unsupported']
-    token=remember(_drafts,{'revision':current['revision'],'date':day,'draft':draft,'threadId':thread_id,'turnId':turn_id}) if ready else None
-    return {**draft,'labels':labels,'draftId':token,'model':model,'threadId':thread_id,'turnId':turn_id,
+    ready = not draft['questions'] and not draft['unsupported']
+    token=remember(_drafts,{'revision':current['revision'],'date':day,'draft':draft,'threadId':thread_id,'turnId':turn_id}) if draft['actions'] else None
+    return {**draft,'labels':labels,'draftId':token if ready else None,'partialDraftId':token if not ready else None,
+            'model':model,'threadId':thread_id,'turnId':turn_id,
             'revision': current['revision'], 'usage': connection().status()}
 
 
@@ -173,15 +188,33 @@ def preview(body: dict):
     current = snapshot(body)
     draft = recalled(_drafts, body.get('draftId'), current['revision'])
     day = draft['date']
-    return calculate_previews(body,current,day,draft['draft']['actions'],threadId=draft.get('threadId'),turnId=draft.get('turnId'))
+    response=draft['draft']
+    return calculate_previews(body,current,day,response['actions'],omissions=confirmed_omissions(body,response),
+                              threadId=draft.get('threadId'),turnId=draft.get('turnId'))
 
 
-def calculate_previews(body,current,day,actions,**metadata):
+def confirmed_omissions(body,response):
+    omitted=[*response.get('questions',[]),*response.get('unsupported',[])]
+    if omitted and body.get('confirmedOnly') is not True:
+        raise ValueError('Уточните просьбу или выберите подбор по подтверждённым условиям.')
+    return omitted
+
+
+def calculate_previews(body,current,day,actions,*,omissions=(),**metadata):
     server=context()
-    results=ai_planner.variants(current['state'],day,actions)
-    snapshot(body)
+    turn=metadata.get('turnId')
+    try:
+        results=ai_planner.variants(current['state'],day,actions)
+        snapshot(body)
+    except Exception as error:
+        if turn:history().record_event(turn,'preview_error',message=str(error) if isinstance(error,ValueError) else
+                                       'Не удалось подобрать расписание.',omitted=list(omissions))
+        raise
+    from .commitments import changes as external_changes
     summaries = []
     for i, result in enumerate(results):
+        if omissions:
+            result={**result,'unfulfilled':list(dict.fromkeys([*result.get('unfulfilled',[]),*omissions]))}
         applied=result.get('actions',actions)
         token = remember(_previews, {'revision': current['revision'], 'date': day,
                                     'actions':applied,'result':result,**metadata})
@@ -190,9 +223,13 @@ def calculate_previews(body,current,day,actions,**metadata):
         payload=server._day_payload(work,day)
         # Compare each option against today's current schedule, not just August.
         payload['base']=deepcopy(result['before']);payload['changes']=result['changes']
+        payload['externalChanges']=external_changes(work,day,previous=current['state'])
         summaries.append({**server._repair_summary(result),'day':payload,'previewId':token,'id':i})
-    return {'date':day,'variants':summaries,'revision':current['revision'],
-            'message':'' if summaries else 'Проверьте расписание и ограничения на выбранный день.'}
+    message='' if summaries else 'Проверьте расписание и ограничения на выбранный день.'
+    if turn:
+        history().record_event(turn,'preview',message=message,omitted=list(omissions),variants=[
+            {k:r[k] for k in ('id','title','stats','warnings','unfulfilled','search','message')} for r in summaries])
+    return {'date':day,'variants':summaries,'revision':current['revision'],'message':message}
 
 
 @router.post('/replay')
@@ -208,11 +245,14 @@ def replay(body:dict):
             break
     else:
         raise ValueError('Запрос в диалоге не найден.')
-    if not response.get('actions') or response.get('questions') or response.get('unsupported'):
+    if not response.get('actions'):
         raise ValueError('Условия этого запроса ещё нуждаются в уточнении.')
+    omitted=confirmed_omissions(body,response)
     raw={key:response.get(key) for key in ('date','reply','actions','questions','unsupported')}
-    draft,_=ai_planner.validate_interpretation(raw,current['state'],day,'\n'.join(requests),replay=True)
-    return calculate_previews(body,current,day,draft['actions'],threadId=thread['id'],turnId=turn['id'])
+    draft,_=ai_planner.review_interpretation(raw,current['state'],day,'\n'.join(requests),replay=True)
+    omitted=list(dict.fromkeys([*omitted,*confirmed_omissions(body,draft)]))
+    if not draft['actions']:raise ValueError('В текущем расписании не осталось условий для повторного подбора.')
+    return calculate_previews(body,current,day,draft['actions'],omissions=omitted,threadId=thread['id'],turnId=turn['id'])
 
 
 def placement_preview(body:dict):
@@ -303,7 +343,11 @@ def apply(body: dict):
                                                                reason=reason,save_version=not manual))
     with _lock:
         _previews.pop(body.get('previewId'), None)
-    if value.get('turnId'):history().finish(value['turnId'],status='applied')
+    if turn:=value.get('turnId'):
+        log=history()
+        log.record_event(turn,'applied',title=value['result'].get('title'),stats=value['result']['stats'],
+                         warnings=value['result'].get('warnings',[]),unfulfilled=value['result'].get('unfulfilled',[]))
+        log.finish(turn,status='applied')
     return {'revision': saved['revision'], 'state': saved['state'], 'day': server._day_payload(saved['state'], day)}
 
 
