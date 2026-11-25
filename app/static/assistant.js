@@ -235,7 +235,7 @@ async function applyAssistantVariant() {
       a.messages.push({role:'assistant',notice:true,text:'Вариант сохранён.',content:'Вариант сохранён.'});
     }
     S.page='day';history.replaceState(null,'','#day');render();
-    toast('Вариант сохранён. Изменения отмечены красным.');
+    toast('Вариант сохранён.');
   });
 }
 
@@ -411,9 +411,9 @@ document.addEventListener('click', async e => {
     const result = await api('/assistant/apply', {revision: a.preview.revision, previewId: assistantSelected().previewId});
     S.data = result.state; S.revision = result.revision; S.day = result.day; S.date = a.date;
     S.preview=null;
-    assistantReset(); a.messages.push({role: 'assistant', content: 'Выбранный вариант сохранён. Изменённые уроки выделены красным в расписании и Word.'});
+    assistantReset(); a.messages.push({role: 'assistant', content: 'Выбранный вариант сохранён.'});
     S.page = 'day'; history.replaceState(null, '', '#day'); render();
-    toast('Вариант сохранён. Изменения отмечены красным.');
+    toast('Вариант сохранён.');
   });
   if (action === 'assistant-clear-conditions') {
     if (!await askConfirm({title: 'Снять условия дня?', text: 'Расставленные уроки останутся на местах. Ограничения по времени, кабинетам и закрепления помощника будут сняты. Отсутствия удаляются отдельно в разделе «Отсутствия».', yes: 'Снять условия'})) return;
