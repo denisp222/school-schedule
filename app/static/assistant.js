@@ -64,6 +64,7 @@ function assistantConditionLabel(row) {
   if(row.type==='join_lessons') return `Совместный урок ${row.period}: ${nameOf('teachers',row.teacherId)}`;
   if(row.type==='allow_eighth') return 'Разрешён восьмой урок для указанного занятия на эту дату';
   if (row.type === 'teacher_absence') return `${nameOf('teachers', row.teacherId)}: отсутствие, уроки ${row.first}–${row.last}`;
+  if (row.type === 'replace_teacher') return `Разовая замена: ${nameOf('teachers',row.originalTeacherId)} → ${nameOf('teachers',row.teacherId)}`;
   if (row.type === 'cancel_individual') return `${individualLabel(row.learnerId)}: отмена индивидуальных занятий на этот день`;
   if (row.type === 'teacher_lesson_window') return `${nameOf('teachers',row.teacherId)}: ${row.classIds.map(id=>nameOf('classes',id)).join(', ')} на уроках ${row.first}–${row.last}${row.cancelOtherClasses?', остальные обычные уроки отменить':''}`;
   if (row.type === 'class_day') return `${nameOf('classes', row.classId)}: начало ${row.first}-м уроком, окончание не позже ${row.last}-го`;
@@ -160,7 +161,7 @@ async function sendAssistant(form) {
     const result=await api('/assistant/interpret',{revision:S.revision,date:a.date,message,threadId:a.threadId,programContext:!!(a.response?.program||a.programContext),
       history:a.messages.filter(m=>!m.error && !m.notice).slice(-10).map(({role,content})=>({role,content}))});
     a.threadId=result.threadId;a.programContext=!!result.program;
-    if(!result.program?.insight)a.replay=result.actions?.length?{id:result.turnId,labels:result.labels}:null;
+    if(!result.program?.insight)a.replay=result.actions?.length?{id:result.turnId,labels:result.labels,actions:result.actions}:null;
     a.messages.push({role: 'user', content: message});
     const content = JSON.stringify({ date: result.date, reply: result.reply, actions: result.actions,
       questions: result.questions, unsupported: result.unsupported });
@@ -205,7 +206,7 @@ async function openAssistantThread(id) {
   const last=thread.turns.at(-1);
   const plan=last?.response?.program?.insight
     ? [...thread.turns].reverse().find(turn=>!turn.response?.program?.insight) : last;
-  if(plan?.response?.actions?.length)a.replay={id:plan.id,labels:plan.response.labels};
+  if(plan?.response?.actions?.length)a.replay={id:plan.id,labels:plan.response.labels,actions:plan.response.actions};
   if(last?.response && last.status!=='applied')a.response={questions:[],unsupported:[],labels:[],...last.response};
   render();
 }
@@ -277,26 +278,27 @@ function schedulePreviewBar() {
   const p=S.preview,v=previewSelected();if(!p || !v)return '';
   const main=v.id===p.variants[0].id;
   const saved=p.kind==='saved-day';
-  const manual=p.kind==='manual';
+  const manual=p.kind==='manual' || p.kind==='substitution';
   const proven=v.search?.primaryProven && v.search?.scope==='all-rooms';
   const proof=main && !manual && !v.unfulfilled?.length && (proven || p.variants.length>1)
     ? `<p class="assistant-note">${proven?'Минимум перестановок подтверждён при заданных условиях.':'Основной вариант в подборе.'}</p>`:'';
   const classHours=v.stats?.classHours?`<p class="assistant-note">Классных часов: ${v.stats.classHours}${v.stats.classHourClasses>v.stats.classHours?' · классов: '+v.stats.classHourClasses:''}</p>`:'';
+  const substitutions=v.stats?.substitutions?`<p class="assistant-note">Уроков с заменой преподавателя: ${v.stats.substitutions}</p>`:'';
   const alerts=(v.warnings || []).filter(text=>text.startsWith('Классный час') || text.startsWith('Резервный вариант'));
   if(v.stats?.classGapDetails?.length)alerts.push('Окна: '+v.stats.classGapDetails.map(row=>`${row.className} — ${row.periods.join(', ')} ур.`).join('; '));
   if(v.stats?.youngerLate)alerts.push('В этом варианте у 5–6 классов остаются уроки позже обычного окончания дня.');
   const warnings=alerts.map(text=>notice(text,'warn')).join('');
-  const title=saved?v.title:manual?'Ручная перестановка':p.variants.length>1?'Выберите вариант':v.title||'Вариант расписания';
+  const title=saved?v.title:p.kind==='substitution'?'Разовая замена преподавателя':manual?'Ручная перестановка':p.variants.length>1?'Выберите вариант':v.title||'Вариант расписания';
   const changes=v.changes || v.day?.changes || [];
   const external=v.day?.externalChanges || [];
   const cancelledExternal=external.filter(c=>c.before && !c.before.cancelled && c.after?.cancelled);
   const unmet=v.unfulfilled?.length
     ? `<div class="notice warn"><div><strong>Условия, которые требуют проверки</strong><ul>${v.unfulfilled.map(text=>`<li>${esc(text)}</li>`).join('')}</ul></div></div>`:'';
   const disabled=S.ai.pending?'disabled':'';
-  const applyLabel=v.stats?.classGapDetails?.length?'Применить вариант с окнами':manual?'Применить перестановку':'Применить вариант';
+  const applyLabel=v.stats?.classGapDetails?.length?'Применить вариант с окнами':p.kind==='substitution'?'Сохранить замену':manual?'Применить перестановку':'Применить вариант';
   return `<section class="schedule-preview-bar" aria-label="Предпросмотр расписания">
     <div class="preview-heading"><h2>${esc(title)}</h2><span>Предпросмотр</span></div>
-    ${proof}${classHours}${warnings}${unmet}
+    ${proof}${classHours}${substitutions}${warnings}${unmet}
     ${p.variants.length>1?`<div class="variant-strip">${p.variants.map((row,i)=>`<button type="button" class="variant-card ${row.id===v.id?'active':''}" data-action="preview-variant" data-id="${esc(row.id)}" aria-pressed="${row.id===v.id}">
       <span class="v-title">${i===0?'Основной вариант':'Вариант '+(i+1)}</span><span>${row.stats?.moved || 0} переставлено · ${row.stats?.cancelled || 0} отменено${row.stats?.externalCancelled?' · дополнительных уроков снято: '+row.stats.externalCancelled:''}${row.stats?.groupLosses ? ' · занятий подгрупп отменено: '+row.stats.groupLosses : ''}${row.stats?.classGapsAfter?' · есть окна':''}${row.stats?.joined?' · совместных: '+row.stats.joined:''}</span></button>`).join('')}</div>`:''}
     ${changes.length?`<details class="preview-diff" ${manual?'open':''}><summary>Изменения (${changes.length})</summary><div class="change-list">${changes.map(changeRow).join('')}</div></details>`
@@ -387,12 +389,24 @@ document.addEventListener('click', async e => {
     a.status = await api('/assistant/settings', {removeKey: true, model: a.status.model});
     a.connectionMessage = 'Ключ удалён с этого компьютера.';
   }, true);
-  if (action === 'assistant-preview' || action === 'assistant-replay') return assistantWork('Подбираем расписание…', async () => {
+  if (action === 'assistant-preview' || action === 'assistant-replay') {
+    const replacements=(a.replay?.actions || []).filter(row=>row.type==='replace_teacher');
+    const active=S.data.assistantConditions?.[a.date] || [];
+    const needsApproval=replacements.some(row=>!active.some(r=>r.type===row.type && r.lessonId===row.lessonId &&
+      r.originalTeacherId===row.originalTeacherId && r.teacherId===row.teacherId));
+    if(needsApproval) {
+      const pairs=[...new Set(replacements.map(r=>nameOf('teachers',r.originalTeacherId)+' → '+nameOf('teachers',r.teacherId)))];
+      if(!await askConfirm({title:'Разрешить разовую замену?',text:`${pairs.join(', ')}. Уроков: ${replacements.length}. Дата: ${fmtDate(a.date)}.`,
+        yes:'Разрешить замену'}))return;
+    }
+    return assistantWork('Подбираем расписание…', async () => {
     a.preview = await withScheduleCalculation('Подбираем расписание', () =>
-      api('/assistant/replay',{revision:S.revision,threadId:a.threadId,turnId:a.replay.id,confirmedOnly:action==='assistant-replay'}));
+      api('/assistant/replay',{revision:S.revision,threadId:a.threadId,turnId:a.replay.id,
+        confirmedOnly:action==='assistant-replay',approveSubstitutions:needsApproval}));
     a.selected = a.preview.variants[0]?.id ?? 0;
     if(a.preview.variants.length)await showSchedulePreview('assistant',a.preview.date,a.preview.variants,a.selected,a.preview.revision);
-  });
+    });
+  }
   if (action === 'assistant-apply') return assistantWork('Сохраняем выбранный вариант…', async () => {
     const result = await api('/assistant/apply', {revision: a.preview.revision, previewId: assistantSelected().previewId});
     S.data = result.state; S.revision = result.revision; S.day = result.day; S.date = a.date;

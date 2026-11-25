@@ -12,6 +12,8 @@ def problems(state,day,actions,after):
     from .model import student_groups,lessons_for_day
     errors=[];sources=None
     for row in actions:
+        if row['type']=='replace_teacher' and not any(l['id']==row['lessonId'] and l['teacherIds']==[row['teacherId']] for l in after):
+            errors.append('Не выполнена согласованная замена преподавателя.')
         if row['type']=='teacher_lesson_window' and any(not teacher_window_allows(row,l,l['period']) for l in after):
             errors.append('Не выполнено ограничение по классам или времени уроков учителя.')
         if row['type'] in ('class_day','group_day'):

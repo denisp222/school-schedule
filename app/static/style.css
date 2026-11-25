@@ -24,11 +24,11 @@
   --red: #b3261e;
   --red-soft: #f8dad2;
   --red-line: #d9534a;
-  --cancel-bg: #f9d8d4;
-  --cancel-chip: #f3c4be;
-  --cancel-ink: #822d25;
-  --absent-bg: #e6e3ef;
-  --absent-ink: #514265;
+  --cancel-bg: #f5c8ce;
+  --cancel-chip: #f8e2e5;
+  --cancel-ink: #72182c;
+  --absent-bg: #f9e5ae;
+  --absent-ink: #694509;
   --green: #5c5875;
   --green-soft: #ece9f2;
   --gold: #b99043;
@@ -528,7 +528,7 @@ textarea.input { height: auto; min-height: 78px; padding: 10px 12px; resize: ver
   min-height: 64px;
   --cell-inline-padding: 10px;
   padding: 5px var(--cell-inline-padding);
-  background: var(--extra-bg, var(--lesson-bg, var(--card)));
+  background: var(--lesson-bg, var(--extra-bg, var(--card)));
   color: var(--ink);
   text-align: left;
   border: 0;
@@ -582,18 +582,28 @@ button.cell { cursor: pointer; }
   font-size: 10px;
   line-height: 12px;
 }
-.lesson-status { flex: none; color: var(--lesson-status-ink); font-weight: 650; }
-.lesson-cancelled .lesson-footer .lesson-status {
-  padding-inline: 4px;
+.lesson-status {
+  flex: none;
+  padding: 1px 4px;
   border-radius: 4px;
-  background: var(--cancel-chip);
+  background: var(--lesson-status-ink, var(--forest));
+  color: #fff;
+  font-weight: 700;
 }
-.lesson-heading .lesson-status { font-size: 11px; line-height: 15px; }
+.lesson-heading .lesson-status { font-size: 10.8px; line-height: 15px; }
 .lesson-status + .lesson-note::before { content: "·"; margin-right: 5px; }
 .lesson-lock { flex: none; display: inline-flex; color: var(--gold); }
-.lesson-changed, .lesson-moved {
-  --lesson-bg: #f8e8e4;
-  --lesson-status-ink: #982d23;
+.lesson-changed {
+  --lesson-bg: #d9eaff;
+  --lesson-status-ink: #224e82;
+}
+.lesson-moved {
+  --lesson-bg: #e4e7ee;
+  --lesson-status-ink: #454e63;
+}
+.lesson-substituted {
+  --lesson-bg: #d2f2e5;
+  --lesson-status-ink: #185a4c;
 }
 .lesson-tile.lesson-cancelled {
   background: var(--cancel-bg);
@@ -608,8 +618,8 @@ button.cell { cursor: pointer; }
   --lesson-status-ink: var(--absent-ink);
 }
 .lesson-gap {
-  --lesson-bg: #faf0dc;
-  --lesson-status-ink: #795019;
+  --lesson-bg: #f1f0ee;
+  --lesson-status-ink: #525052;
 }
 .lesson-cancelled .subj { color: var(--cancel-ink); }
 .lesson-moved .subj {

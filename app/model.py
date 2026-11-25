@@ -564,6 +564,10 @@ def validate_state(raw: dict, *, check_collisions: bool = True) -> dict:
                     for field,kind in [('teacherId','teachers'),('classId','classes'),('roomId','rooms')]:
                         if hasattr(item,field) and getattr(item,field) is not None and getattr(item,field) not in ids[kind]:raise ValueError()
                     if hasattr(item,'lessonId') and item.lessonId is not None and item.lessonId not in lesson_ids:raise ValueError()
+                    if item.type=='replace_teacher':
+                        from .substitutions import validate as validate_substitution
+                        lesson=next((l for l in day_rows+base_rows if l['id']==item.lessonId),None)
+                        validate_substitution(state,lesson,item.model_dump())
                     if hasattr(item,'replaceLessonId') and item.replaceLessonId is not None and item.replaceLessonId not in lesson_ids:raise ValueError()
                     if item.type in ('class_day','group_day') and item.first>7:
                         permit_ids={r['lessonId'] for r in rows if r.get('type')=='allow_eighth'}

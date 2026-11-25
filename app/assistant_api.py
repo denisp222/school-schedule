@@ -216,6 +216,9 @@ def confirmed_omissions(body,response):
 
 def calculate_previews(body,current,day,actions,*,omissions=(),**metadata):
     server=context()
+    from .substitutions import needs_confirmation
+    if needs_confirmation(current['state'],day,actions) and body.get('approveSubstitutions') is not True:
+        raise ValueError('Подтвердите разовую замену преподавателя перед подбором.')
     turn=metadata.get('turnId')
     try:
         results=ai_planner.variants(current['state'],day,actions)
@@ -239,7 +242,9 @@ def calculate_previews(body,current,day,actions,*,omissions=(),**metadata):
         payload['base']=deepcopy(result['before']);payload['changes']=result['changes']
         payload['externalChanges']=external_changes(work,day,previous=current['state'])
         summaries.append({**server._repair_summary(result),'day':payload,'previewId':token,'id':i})
-    message='' if summaries else 'Проверьте расписание и ограничения на выбранный день.'
+    message='' if summaries else ('Согласованная замена не помещается в расписание. Проверьте занятость учителя или выберите другого.'
+                                  if any(r['type']=='replace_teacher' for r in actions)
+                                  else 'Проверьте расписание и ограничения на выбранный день.')
     if turn:
         from .schedule_insights import variant_facts
         history().record_event(turn,'preview',message=message,omitted=list(omissions),variants=[
@@ -313,6 +318,35 @@ def placement_preview(body:dict):
     if not response['variants']:
         response['message']='Для выбранного места с текущими ограничениями подходящий вариант не найден. Выберите другой урок или кабинет.'
     return response
+
+
+@router.post('/substitution-preview')
+def substitution_preview(body:dict):
+    from .model import lessons_for_day
+    from .substitutions import validate
+    server=context()
+    current=snapshot(body)
+    day=server.require_day(body.get('date',''))
+    state=current['state']
+    lessons=lessons_for_day(state,day)
+    source=next((l for l in lessons if l['id']==body.get('lessonId')),None)
+    teacher=body.get('teacherId')
+    if not source or not isinstance(teacher,str) or len(source['teacherIds'])!=1:
+        raise ValueError('Выберите урок и преподавателя для разовой замены.')
+    original=source['teacherIds'][0]
+    validate(state,source,{'originalTeacherId':original,'teacherId':teacher})
+    selected=[source]
+    if body.get('allLessons') is True:
+        selected=[l for l in lessons if l['teacherIds']==[original] and l['subjectId']==source['subjectId']
+                  and not any(l.get(k) for k in ('joint','technologyJoint','classHour'))]
+    replacements=[{'type':'replace_teacher','lessonId':l['id'],'originalTeacherId':original,'teacherId':teacher}
+                  for l in selected]
+    for lesson,row in zip(selected,replacements):validate(state,lesson,row)
+    ids={l['id'] for l in selected}
+    actions=[r for r in state.get('assistantConditions',{}).get(day,[])
+             if not (r['type']=='replace_teacher' and r['lessonId'] in ids)]+replacements
+    if len(actions)>24:raise ValueError('На день уже задано много условий. Снимите ненужные условия и повторите.')
+    return calculate_previews(body,current,day,actions,reason='Согласованная разовая замена')
 
 
 @router.post('/class-hour-preview')

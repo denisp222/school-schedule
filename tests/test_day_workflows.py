@@ -180,6 +180,59 @@ def test_explains_selected_and_compares_saved_variants_without_changing_schedule
     assert all(turn['response']['program']['insight'] for turn in exported['turns'][1:])
 
 
+def test_substitution_is_qualified_explicit_and_only_on_the_selected_date(desk):
+    client,store=desk
+    request={'date':DAY,'revision':1,'lessonId':'a-1','teacherId':'free','allLessons':True}
+    route='/api/assistant/substitution-preview'
+    assert client.post(route,json=request).status_code==422
+    assert client.post(route,json={**request,'teacherId':'missing','approveSubstitutions':True}).status_code==422
+    option=post(client,'/assistant/substitution-preview',{**request,'approveSubstitutions':True})['variants'][0]
+    assert option['stats']['substitutions']==3 and option['stats']['moved']==0
+    assert store.read()['revision']==1
+    saved=post(client,'/assistant/apply',{'revision':1,'previewId':option['previewId']})
+    assert all(l['teacherIds']==['free'] for l in saved['day']['lessons'] if l['id'].startswith('a-'))
+    state=saved['state']
+    assert all(l['teacherIds']==['a'] for l in lessons_for_day(state,'2026-11-30') if l['id'].startswith('a-'))
+    assert state['plan']==school()['plan']
+    assert all(row['type']=='replace_teacher' for row in state['assistantConditions'][DAY])
+    repaired=post(client,'/repair',{'revision':2,'date':DAY})['variants'][0]
+    assert all(l['teacherIds']==['free'] for l in repaired['after'] if l['id'].startswith('a-'))
+
+
+def test_assistant_substitution_does_not_follow_from_absence_or_preview_without_consent(desk,monkeypatch):
+    from app import assistant_api
+    client,store=desk
+    substitution={'type':'replace_teacher','lessonId':'a-1','originalTeacherId':'a','teacherId':'free'}
+
+    class Model:
+        def status(self):return {'configured':True,'paidEnabled':False,'provider':'deepseek','model':'test'}
+
+        def interpret(self,*args,**kwargs):
+            return {'date':DAY,'reply':'Разовая замена','actions':[substitution],'questions':[],'unsupported':[]},'test'
+
+    monkeypatch.setattr(assistant_api,'connection',lambda:Model())
+    body={'revision':1,'date':DAY,'message':'Что у нас на понедельник?'}
+    assert client.post('/api/assistant/interpret',json=body).status_code==422
+    draft=post(client,'/assistant/interpret',{**body,'message':'Пусть свободный преподаватель проведёт 8а вместо исходного.'})
+    replay={key:draft[key] for key in ('threadId','turnId')}
+    for path,selection in [('/preview',{'draftId':draft['draftId']}),('/replay',replay)]:
+        assert client.post('/api/assistant'+path,json={'revision':1,**selection}).status_code==422
+    result=post(client,'/assistant/replay',{'revision':1,**replay,'approveSubstitutions':True})
+    assert result['variants'][0]['stats']['substitutions']==1 and store.read()['revision']==1
+
+
+def test_substitute_cannot_cover_more_than_daily_limit(tmp_path,monkeypatch):
+    state=school()
+    next(t for t in state['teachers'] if t['id']=='free')['maxDaily']=2
+    store=Store(tmp_path/'test.sqlite3',lambda:state)
+    monkeypatch.setattr(server,'store',store)
+    client=TestClient(server.app)
+    request={'revision':1,'date':DAY,'lessonId':'a-1','teacherId':'free','allLessons':True,'approveSubstitutions':True}
+    result=post(client,'/assistant/substitution-preview',request)
+    assert not result['variants'] and 'не помещается' in result['message']
+    assert store.read()['revision']==1
+
+
 def test_grounded_day_questions_work_without_model_and_do_not_invent_another_date(desk,monkeypatch):
     from types import SimpleNamespace
     from app import assistant_api

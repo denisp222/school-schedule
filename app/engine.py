@@ -115,7 +115,11 @@ def repair_problems(state, result):
             if not joint:errors.append('Объединение классов не было согласовано или нарушает исходные занятия.')
             if any(other['id'] in set(source_ids(lesson))-{lesson['id']} for other in actual_week):
                 errors.append('Объединённое занятие нельзя одновременно оставить отдельным уроком.')
-        if not joint and (not source or not set(lesson['teacherIds']).issubset(source['teacherIds']) or lesson['subjectId']!=source['subjectId'] or set(lesson['classIds'])!=set(source['classIds'])):
+        same_teachers=source and set(lesson['teacherIds']).issubset(source['teacherIds'])
+        if source and not same_teachers and not joint:
+            from .substitutions import approved_change,permissions
+            same_teachers=approved_change(state,source,lesson,permissions(lesson_conditions).get(lesson['id']))
+        if not joint and (not source or not same_teachers or lesson['subjectId']!=source['subjectId'] or set(lesson['classIds'])!=set(source['classIds'])):
             errors.append('Урок должен сохранить своего учителя, предмет и класс.')
         if lesson.get('eighthOn') and (not source or source.get('eighthOn')!=lesson['eighthOn']):
             if not any(r['type']=='allow_eighth' and r['lessonId']==lesson['id'] for r in state.get('assistantConditions',{}).get(lesson['eighthOn'],[])):
@@ -147,7 +151,12 @@ def repair_problems(state, result):
             actual=[l for l in actual_week if tid in l['teacherIds'] and not l.get('classHour')]
             original=[l for l in original_week if tid in l['teacherIds'] and not l.get('classHour')]
             cap=teacher.get('weeklyTarget')
-            if cap is not None and len(actual)>max(cap,len(original)):errors.append(teacher['name']+': превышена недельная нагрузка.')
+            if cap is not None:
+                original_ids={l['id'] for l in original}
+                covers={r['lessonId'] for r in state.get('assistantConditions',{}).get(key,[])
+                        if r['type']=='replace_teacher' and r['teacherId']==tid} - original_ids
+                extra_cover=sum(l['id'] in covers for l in actual)
+                if len(actual)>max(cap,len(original))+extra_cover:errors.append(teacher['name']+': превышена недельная нагрузка.')
             if len({l['day'] for l in actual})>max(teacher.get('maxDays',5),len({l['day'] for l in original})):errors.append(teacher['name']+': превышено число рабочих дней.')
     from .day_conditions import problems as day_problems
     errors.extend(day_problems(state,result['date'],state.get('assistantConditions',{}).get(result['date'],[]),result['after']))

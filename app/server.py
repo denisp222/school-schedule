@@ -844,6 +844,10 @@ def edit_lesson(body: dict):
             before = lessons_for_day(state, day)
             source = None
         old = next((l for l in before if l["id"] == raw["id"]), None)
+        if scope=='day' and old and body.get('remove'):
+            conditions=state.get('assistantConditions',{}).get(day)
+            if conditions:state['assistantConditions'][day]=[r for r in conditions
+                if not (r['type']=='replace_teacher' and r['lessonId']==old['id'])]
         if scope=='day' and old and old.get('classHour') and body.get('remove'):
             state.get('assistantConditions',{})[day]=[r for r in state.get('assistantConditions',{}).get(day,[])
                 if not (r['type']=='class_hour' and r['classId'] in old['classIds'])]

@@ -522,6 +522,7 @@ const LESSON_STATUSES = {
   cancelled: 'Отменено',
   moved: 'Перенесено',
   absent: 'Отсутствует',
+  substituted: 'Замена',
   gap: 'Окно',
 };
 
@@ -568,21 +569,20 @@ function removedLessonStatus(lesson, actualLessons) {
     || l.technologyJoint?.sourceRefs.some(source => source.lessonId === lesson.id)) ? 'moved' : 'cancelled';
 }
 
-function lessonCell(row, period, current, base) {
-  const shown = S.preview ? previewDay() : S.day;
+function lessonCell(row,period,current,base,shown,changes) {
   const status = sameCell(current, base) ? '' : 'changed';
-  const tiles = current.map(lesson => lessonCellAt(row, period, shown, lesson, status));
+  const tiles = current.map(lesson => lessonCellAt(row,period,shown,changes,lesson,status));
   if (!current.length) {
     for (const old of base) {
-      tiles.push(lessonCellAt(row, period, shown, null, removedLessonStatus(old, shown.lessons), old));
+      tiles.push(lessonCellAt(row,period,shown,changes,null,removedLessonStatus(old,shown.lessons),old));
     }
   }
   tiles.push(...externalCells(row, period, shown));
-  if (!tiles.length) return lessonCellAt(row, period, shown);
+  if (!tiles.length) return lessonCellAt(row,period,shown,changes);
   return tiles.length === 1 ? tiles[0] : `<div class="cell-stack">${tiles.join('')}</div>`;
 }
 
-function lessonCellAt(row, period, shown, lesson = null, status = '', previous = null) {
+function lessonCellAt(row,period,shown,changes,lesson=null,status='',previous=null) {
   const teacherIds = lesson?.teacherIds || (S.view === 'teachers' ? [row.id] : []);
   const absent = (shown.absences || []).some(a => a.first <= period && period <= a.last && teacherIds.includes(a.teacherId));
   const gap = !lesson && S.view === 'classes' && (shown.classGapDetails || []).some(item => item.classId === row.id && item.periods.includes(period));
@@ -590,7 +590,12 @@ function lessonCellAt(row, period, shown, lesson = null, status = '', previous =
   const info = displayed ? lessonDisplay(S.view, displayed) : {title: ''};
   const partners = S.view === 'classes' && (lesson?.joint || lesson?.technologyJoint)
     ? lesson.classIds.filter(id => id !== row.id) : [];
-  const note = [gap && previous ? 'Окно' : '', displayed ? lessonGroupLabel(displayed, row) : '',
+  const {before,after}=changes.get(displayed?.id) || {};
+  const swapped=before && after && before.teacherIds.length===1 && after.teacherIds.length===1 &&
+    before.teacherIds[0]!==after.teacherIds[0] && !after.joint && !after.technologyJoint && !after.classHour;
+  if(swapped)status='substituted';
+  const cover=swapped?(previous?'Проведёт '+teacherSurnames(after.teacherIds):'Вместо '+teacherSurnames(before.teacherIds)):'';
+  const note = [cover, gap && previous ? 'Окно' : '', displayed ? lessonGroupLabel(displayed, row) : '',
     partners.length ? 'С ' + namesOf('classes', partners) : ''].filter(Boolean).join(' · ');
   if (!previous && absent) status = 'absent';
   if (!status && gap) status = 'gap';
@@ -604,7 +609,9 @@ function lessonCellAt(row, period, shown, lesson = null, status = '', previous =
 function renderGrid() {
   const periods = S.data.school.bells.length;
   const rows = rowList();
-  const current=S.preview?previewDay().lessons:lessonsFor(S.date);
+  const shown=S.preview?previewDay():S.day;
+  const changes=new Map((shown.changes || []).map(change=>[change.id,change]));
+  const current=S.preview?shown.lessons:lessonsFor(S.date);
   const base=S.preview?previewDay().base:baseFor(S.date);
   const field = S.view === 'teachers' ? 'teacherIds' : S.view === 'classes' ? 'classIds' : 'roomIds';
   const header = `<div class="grid-head corner">${S.view === 'teachers' ? 'Преподаватель' : S.view === 'classes' ? 'Класс' : 'Кабинет'}</div>` +
@@ -617,7 +624,7 @@ function renderGrid() {
     ${rowHead(row)}
     ${Array.from({ length: periods }, (_, index) => {
       const period = index + 1;
-      return lessonCell(row, period, cellAt(current, field, row.id, period), cellAt(base, field, row.id, period));
+      return lessonCell(row,period,cellAt(current,field,row.id,period),cellAt(base,field,row.id,period),shown,changes);
     }).join('')}
   `).join('');
   return `<div class="grid-wrap"><div class="grid" style="--periods:${periods}">${header}${body}</div></div>`;
@@ -687,7 +694,6 @@ function renderDay() {
       ${S.preview?'':'<div class="drag-legend">Перетащите урок в нужную клетку. <span id="drag-feedback" role="status"></span></div>'}
       <div style="margin-top:10px">${statLine([
         `<b>${day.stats.errors || 0}</b> конфликтов`,
-        changes.length ? `<span class="pill red">Красным отмечено изменённое</span>` : '',
       ])}</div>
       ${S.preview?'':renderDayLoadLocator()}
     </div>`;
@@ -988,7 +994,7 @@ async function applyRepair(buttonNode) {
     S.preview=null;
     closeModal();
     render();
-    toast('Изменения применены. Красным отмечено, что поменялось.');
+    toast('Изменения применены и отмечены в таблице.');
   } catch (error) {
     buttonNode.disabled = false;
     buttonNode.innerHTML = `${icon('check')}Применить`;
@@ -1130,6 +1136,9 @@ function openLessonSheet(dataset) {
     ? source.filter((item) => item.id !== existing.id && item.period !== existing.period
       && JSON.stringify([...(item.classIds || [])].sort()) === JSON.stringify([...(existing.classIds || [])].sort()))
     : [];
+  const replacements=scope==='day' && existing?.teacherIds.length===1 &&
+    !existing.joint && !existing.technologyJoint && !existing.classHour
+    ? S.data.teachers.filter(t=>!t.archived && t.id!==lesson.teacherIds[0] && t.subjectIds?.includes(lesson.subjectId)) : [];
   const body = `
     <div class="form-grid">
       <div class="form-grid two">
@@ -1144,7 +1153,7 @@ function openLessonSheet(dataset) {
         <span class="field-label">Преподаватель</span>
         <div id="lesson-teachers">${teacherChecks(lesson.subjectId, lesson.teacherIds || [])}</div>
       </div>
-      <div class="notice">${icon('info')}<div class="grow">Обычные уроки сохраняют своих преподавателей. Исключения для совместных занятий и технологии согласуются отдельно. Постоянные назначения меняются в разделе «Неделя».</div></div>
+      ${replacements.length?'<div><button type="button" id="substitute-lesson" class="btn">Разовая замена преподавателя</button></div>':''}
       ${scope==='day' && existing && (existing.classHour || classHourEligible(existing))?`<label class="check"><input type="checkbox" name="classHour" ${existing.classHour?'checked':''}>Классный час (Кл/ч)${existing.classIds.length>1?' · '+esc(namesOf('classes',existing.classIds)):''}</label>`:''}
       <div class="form-grid two">
         <label class="field"><span>Номер урока</span><select class="input" name="period">
@@ -1177,8 +1186,9 @@ function openLessonSheet(dataset) {
   S.lessonContext = { existing, date, scope };
   if (existing && scope === 'day') {
     for (const node of $$('#sheet-form [name=classId], #sheet-form [name=subjectId], #sheet-form [name=teacherIds]')) node.disabled = true;
-    $('#lesson-teachers').insertAdjacentHTML('beforeend', '<small class="muted">Переставляется этот урок со своим учителем. Постоянные назначения меняются в разделе «Неделя».</small>');
+    $('#lesson-teachers').insertAdjacentHTML('beforeend', '<small class="muted">Постоянные назначения меняются в разделе «Неделя».</small>');
   }
+  $('#substitute-lesson')?.addEventListener('click',()=>openSubstitutionSheet(dataset,date,lesson,replacements));
   $('#sheet-form [name=subjectId]').addEventListener('change', (event) => {
     const selected = [...formChecked('teacherIds')];
     $('#lesson-teachers').innerHTML = teacherChecks(event.target.value, selected);
@@ -1197,6 +1207,31 @@ function openLessonSheet(dataset) {
     };
     hourBox.addEventListener('change',update);update();
   }
+}
+
+function openSubstitutionSheet(dataset,date,lesson,teachers) {
+  openSheet({title:'Разовая замена преподавателя',sub:fmtLongCap(date)+' · '+fullLesson(lesson),
+    body:`<div class="form-grid">
+      <label class="field"><span>Кто проведёт урок</span><select class="input" name="substitute" required>
+        <option value="">Выберите преподавателя</option>${teachers.map(t=>`<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}
+      </select></label>
+      <label class="check"><input type="checkbox" name="allLessons">Все обычные уроки этого предмета у исходного учителя на эту дату</label>
+      <p class="muted">Проверьте предпросмотр перед сохранением. В учебном плане останется исходный преподаватель.</p>
+    </div>`,
+    foot:`${button('Назад','close-sheet','ghost')}<button type="submit" class="btn primary">Разрешить замену и подобрать</button>`,
+    submit:async form=>{
+      const data=new FormData(form);
+      const result=await withScheduleCalculation('Проверяем замену',()=>api('/assistant/substitution-preview',{
+        date,revision:S.revision,lessonId:lesson.id,teacherId:data.get('substitute'),
+        allLessons:data.has('allLessons'),approveSubstitutions:true
+      }));
+      if(!result.variants.length)throw new Error(result.message);
+      await showSchedulePreview('substitution',date,result.variants,0,result.revision,S.view);
+    }});
+  $('#sheet-foot [data-action="close-sheet"]')?.addEventListener('click',e=>{
+    e.stopPropagation();
+    openLessonSheet(dataset);
+  });
 }
 
 function formChecked(name) {
@@ -2116,8 +2151,8 @@ function renderHelp() {
           <p>Экспорт вставляется в ваши исходные таблицы: размеры, поля, границы и шрифт остаются прежними. Меняются только предметы, классы и кабинеты. Изменённые клетки выделяются красным; заголовок дня сохраняет исходное оформление. Свободные кабинеты в таблице учителей показываются только на 1–6 уроках, как вы просили.</p>
         </div>
         <div class="help-card">
-          <h2>Красное — значит изменено</h2>
-          <p>Красная клетка и пометка «изм.» означают, что урок переставлен, добавлен или отменён. В журнале хранится, что было и что стало. Кнопка «Вернуть день» возвращает базовое расписание.</p>
+          <h2>Пометки в расписании</h2>
+          <p>Подпись в ячейке показывает перенос, отмену, отсутствие или замену. Журнал хранит прежнее и новое назначение. Кнопка «Вернуть день» возвращает базовое расписание.</p>
         </div>
         <div class="help-card">
           <h2>Если что-то не сходится</h2>

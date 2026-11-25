@@ -27,10 +27,12 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
     if allow_room_changes is None:
         args=dict(state=state,day=day,variant=variant,teacher_ids=teacher_ids,baseline=baseline,excluded=excluded,conditions=conditions,_allow_drop=_allow_drop)
         if _limits:
-            bound=solve_day(**args,hint=hint,allow_room_changes='relaxed',_seconds=.5,_limits=_limits)
+            improvement=_limits.get('improvement')
+            bound=solve_day(**args,hint=hint,allow_room_changes='relaxed',_seconds=.35 if improvement else .5,_limits=_limits)
             if bound:
                 projected=solve_day(**args,hint=hint,allow_room_changes=True,_seconds=.5,_placements=bound['placements'],_limits=_limits)
                 if projected:return projected
+            if improvement:return None
             fixed=solve_day(**args,hint=hint,allow_room_changes=False,_seconds=.7,_limits=_limits)
             return fixed or solve_day(**args,hint=hint,allow_room_changes=True,_seconds=1.6,_limits=_limits)
         def certificate(result,bound):
@@ -89,6 +91,7 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
     pins.update({ident:r['period'] for ident,r in placements.items()})
     pins.update({l['id']:l['period'] for l in before if l.get('classHour')})
     pins.update({l['id']:(l.get('technologyJoint') or l['joint'])['period'] for l in before if l.get('joint') or l.get('technologyJoint')})
+    replacements={r['lessonId'] for r in conditions if r['type']=='replace_teacher'}
     from .commitments import occupancy
     external=occupancy(state,day)
     unit_counts={};has_capacity=any(r.get('capacity') for r in state['rooms'])
@@ -132,7 +135,7 @@ def solve_day(state, day, variant=0, teacher_ids=(), baseline=None, hint=None, e
             hint_period=unit_hint['period'] if unit_hint else None
             blocked=any(absent(t,old['period']) for t in unit['teacherIds'])
             pair_blocked=any((c,unit['subjectId'],t) in blocked_pairs for c in unit['classIds'] for t in unit['teacherIds'])
-            cancellation=model.new_bool_var(f'cancel{n}') if ((blocked or pair_blocked or _allow_drop) and old['id'] not in pins
+            cancellation=model.new_bool_var(f'cancel{n}') if ((blocked or pair_blocked or _allow_drop) and old['id'] not in pins and old['id'] not in replacements
                 or cancelled_for_absence(state,old,day)) else None
             if cancellation is not None:loss.append(cancellation*len(unit['teacherIds']))
             for c in unit['classIds']:

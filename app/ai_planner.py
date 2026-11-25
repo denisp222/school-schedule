@@ -74,6 +74,13 @@ class CancelIndividual(StrictModel):
     learnerId: str
 
 
+class ReplaceTeacher(StrictModel):
+    type: Literal['replace_teacher']
+    lessonId: str
+    originalTeacherId: str
+    teacherId: str
+
+
 class TeacherWindow(StrictModel):
     type: Literal['teacher_lesson_window']
     teacherId: str
@@ -141,7 +148,7 @@ class AllowTechnology(StrictModel):
     classIds: list[str] = Field(max_length=40)
 
 
-Action = Annotated[Absence | ClassDay | Pin | Placement | Room | Cancel | CancelIndividual | TeacherWindow | Join | Eighth | ClassHour | GroupDay | JoinTechnology | AllowTechnology | AllowClassGaps, Field(discriminator='type')]
+Action = Annotated[Absence | ClassDay | Pin | Placement | Room | Cancel | CancelIndividual | ReplaceTeacher | TeacherWindow | Join | Eighth | ClassHour | GroupDay | JoinTechnology | AllowTechnology | AllowClassGaps, Field(discriminator='type')]
 
 
 class Interpretation(StrictModel):
@@ -165,6 +172,7 @@ SYSTEM = '''Ты помощник завуча. Ты ТОЛЬКО перевод
 {"type":"pin_lesson","lessonId":"id","period":3} конкретный существующий урок поставить и закрепить на номере period.
 {"type":"room_unavailable","roomId":"id","first":1,"last":8} кабинет недоступен.
 {"type":"cancel_lesson","lessonId":"id"} отменить конкретный урок ТОЛЬКО по явному указанию пользователя.
+{"type":"replace_teacher","lessonId":"id","originalTeacherId":"id","teacherId":"id"} разовая замена по явной просьбе. Предмет и класс прежние. Новый учитель должен вести этот предмет по subjectIds. Укажи конкретные уроки выбранной даты, по одному действию на урок. Если названы несколько возможных учителей, уточни, кого согласовать. Отсутствие учителя само по себе не разрешает замену. Перед расчётом приложение отдельно попросит разрешение.
 {"type":"cancel_individual","learnerId":"id"} отменить ВСЕ индивидуальные занятия этого ученика на selectedDate, включая восьмой урок. Используй individualLearners и externalActivities; обычные уроки его класса не отменяй. Если в классе несколько индивидуальных учеников и не указан номер, спроси, кого именно. Сведения об учащихся в контексте обезличены.
 {"type":"teacher_lesson_window","teacherId":"id","classIds":["id"],"first":1,"last":4,"cancelOtherClasses":false} перенести обычные уроки учителя у указанных классов в диапазон 1–4. Включи все относящиеся к просьбе классы выбранной параллели. cancelOtherClasses=true ТОЛЬКО если пользователь явно попросил отменить все остальные обычные уроки этого учителя. «Снять только девятые классы» — отдельные cancel_lesson по урокам 9-х классов этого учителя. Если учитель уходит после 4-го и недоступен для любых занятий, также добавь teacher_absence на 5–8. Уточнение может заменить прежний диапазон или перечень отмен.
 {"type":"join_lessons","lessonIds":["id1","id2"],"teacherId":"id","period":1,"roomId":null} провести несколько существующих уроков одного предмета совместно у одного из их преподавателей. Указывай все исходные lessonIds. Одна запись classIds может уже включать несколько классов: добавь её ID один раз. Например, урок 8а и 8б в одной записи плюс отдельный урок 9в дают три класса по двум ID. Укажи ID кабинета, если он назван пользователем; roomId=null означает подобрать подходящий кабинет.
@@ -195,7 +203,7 @@ verifiedActions — явные условия, уже сопоставленны
 Включай existingDayConditions, если пользователь явно не попросил снять конкретное условие.
 Уже сохранённое отсутствие нельзя удалить просьбой: предложи раздел «Отсутствия» и укажи это в unsupported.
 Неподдержанное ОБЯЗАТЕЛЬНО перечисляй в unsupported, не подменяй похожим действием:
-новый предмет/урок (кроме согласованного классного часа), произвольная замена учителя без совместного урока или классного часа, новое деление на группы, годовая генерация,
+новый предмет/урок (кроме согласованного классного часа), замена преподавателем другого предмета, новое деление на группы, годовая генерация,
 изменение недельной нагрузки, переносы на другой день, произвольные пожелания или ослабление правил.
 Объясни ограничение по существу и предложи конкретный осуществимый следующий шаг: уточнить класс, урок или дату, воспользоваться учтёнными условиями или открыть нужный редактор. Не объявляй всю просьбу невыполнимой, если часть условий можно проверить.
 Спаренные уроки по учебному плану, в том числе два урока труда, должны идти ПОДРЯД у каждой подгруппы. Нельзя разделять пару другими предметами или сохранять только её половину.
@@ -203,7 +211,7 @@ verifiedActions — явные условия, уже сопоставленны
 Сначала программа ищет без окон у каждой подгруппы. Если такой вариант не найден, покажет отдельный резервный вариант с явными окнами и предупреждением перед сохранением. Отсутствия, пересечения и безопасность при этом не ослабляются. Окна у учителей разрешены и НЕ учитываются при выборе.
 После сохранения часов алгоритм в первую очередь избегает лишнего седьмого урока у 5–6 классов, даже если для этого нужно больше перестановок. Затем сокращает перестановки и предпочитает начало первым уроком. Не превращай это в обязательное class_day: пользователь может явно попросить прийти позже. Семь уроков вместо привычных шести допустимы при необходимости; восьмой по-прежнему только по отдельному исключению.
 Пожелания «стараться к первому» и «по возможности не ставить седьмой младшим» уже учитываются: подтверди это в reply без unsupported и без нового action. Точное требование «должны прийти ко второму» остаётся class_day.
-Сохраняются собственные учителя, кроме явно согласованных совместных занятий. На восьмой нельзя, кроме закреплённого исключения четверга или явного allow_eighth на дату.
+Сохраняются собственные учителя, кроме явно согласованных совместных занятий и replace_teacher. На восьмой нельзя, кроме закреплённого исключения четверга или явного allow_eighth на дату.
 Технология: существующие подгруппы можно вести в разное время; пара из двух часов каждой подгруппы остаётся подряд.
 {"type":"group_day","classId":"id","groupIndex":0,"first":1,"last":7} точное начало и предельное окончание ОДНОЙ существующей подгруппы. Индекс НЕ означает пол: смотри groupRoles/groupNames. Если состав не указан, спроси, какой преподаватель ведёт нужную подгруппу, или предложи указать состав в разделе «Дополнительные занятия → Подгруппы».
 {"type":"allow_technology","teacherId":"id","sameClass":true,"girlsClasses":false,"boysClasses":false,"safetyApproved":false,"classIds":[]} явное разрешение редкого исключения: учитель одной подгруппы технологии ведёт обе подгруппы своего класса. girlsClasses=true разрешает объединить девочек двух классов; boysClasses=true — мальчиков разных классов, только при явном подтверждении безопасных условий safetyApproved=true и известных численности/вместимости. classIds ограничивает классы, [] означает без дополнительного ограничения. Не включай эти разрешения без просьбы пользователя. Конкретные пары подберёт алгоритм; наличие разрешения не требует применять объединение.
@@ -268,7 +276,12 @@ def messages_for(state, day, message, history, *, full_context=False, verified_h
         for kind,field in [('teachers','teacherIds'),('classes','classIds'),('rooms','roomIds')]:refs[kind].update(lesson[field])
         refs['subjects'].add(lesson['subjectId'])
     focused=any(refs.values()) and not full_context
-    def catalog(kind):return [{k:r[k] for k in ('id','name')} for r in state[kind] if not focused or r['id'] in refs[kind]]
+    if focused and re.search(r'замен|подмен|вместо|провед|провест',request_text.casefold()):
+        refs['teachers'].update(r['id'] for r in state['teachers']
+                                if refs['subjects'].intersection(r.get('subjectIds',[])) and not r.get('archived'))
+    def catalog(kind):
+        fields=('id','name','subjectIds','archived') if kind=='teachers' else ('id','name')
+        return [{k:r[k] for k in fields if k in r} for r in state[kind] if not focused or r['id'] in refs[kind]]
     context = {'selectedDate': day, 'weekday': parse_date(day).weekday(),
                'classLeaders':leader_map(state),
                'classLeaderRooms':{t['id']:leader_room(state,t['id']) for t in state['teachers'] if leader_room(state,t['id'])},
@@ -504,6 +517,19 @@ def validate_interpretation(raw, state, day, request_text='', *, replay=False):
             slots=sum(r['last']-r['first']+1 for r in matching(state,day) if r.get('learnerId')==action.learnerId)
             labels.append(f"{aliases[action.learnerId]}: отменить все индивидуальные уроки ({slots})" if slots
                           else f"{aliases[action.learnerId]}: на эту дату нет активных индивидуальных уроков")
+        elif isinstance(action,ReplaceTeacher):
+            from .substitutions import validate
+            chosen=lessons.get(action.lessonId)
+            saved=row in state.get('assistantConditions',{}).get(day,[])
+            if not saved and not re.search(r'замен|подмен|вместо|провед|провест|возьм',request_text.casefold()):
+                raise AssistantError('Разовая замена требует явной просьбы. Назовите уроки и преподавателя.')
+            if not saved and chosen and chosen['teacherIds']!=[action.originalTeacherId]:
+                raise AssistantError('Исходный преподаватель не совпадает с расписанием.')
+            try:validate(state,chosen,row)
+            except ValueError as error:raise AssistantError(str(error)) from None
+            classes=', '.join(ix['classes'][c]['name'] for c in chosen['classIds'])
+            labels.append(f"{classes}, {ix['subjects'][chosen['subjectId']]['name']}, {chosen['period']}-й урок: "
+                          f"{ix['teachers'][action.originalTeacherId]['name']} → {ix['teachers'][action.teacherId]['name']}")
         elif isinstance(action, TeacherWindow):
             if action.teacherId not in ix['teachers'] or not set(action.classIds)<=ix['classes'].keys() or len(set(action.classIds))!=len(action.classIds):
                 raise AssistantError('Для ограничения уроков уточните учителя и классы.')
@@ -562,7 +588,7 @@ def validate_interpretation(raw, state, day, request_text='', *, replay=False):
                 labels.append(f'{title}, {lesson["period"]}-й урок: отменить')
     # Contradictory duplicates must not be silently resolved by dictionary order.
     for kind, field in (('class_day', 'classId'), ('pin_lesson', 'lessonId'),('class_hour','classId'),
-                        ('teacher_lesson_window','teacherId')):
+                        ('teacher_lesson_window','teacherId'),('replace_teacher','lessonId')):
         values = [a.model_dump()[field] for a in parsed.actions if a.type == kind]
         if len(values) != len(set(values)):
             raise AssistantError('Для одного класса или урока заданы разные условия. Уточните просьбу.')
@@ -578,6 +604,9 @@ def validate_interpretation(raw, state, day, request_text='', *, replay=False):
     tech_refs=[(r.lessonId,r.groupIndex) for a in parsed.actions if isinstance(a,JoinTechnology) for r in a.sources]
     if len(tech_refs)!=len(set(tech_refs)) or {p for p,g in tech_refs}.intersection(joined_ids+list(pins)+[a.lessonId for a in parsed.actions if isinstance(a,Cancel)]):
         raise AssistantError('Подгруппа одновременно участвует в несовместимых действиях.')
+    replacements={a.lessonId for a in parsed.actions if isinstance(a,ReplaceTeacher)}
+    if replacements.intersection(joined_ids+[a.lessonId for a in parsed.actions if isinstance(a,Cancel)]+[p for p,g in tech_refs]):
+        raise AssistantError('Выберите для урока одно действие: замену учителя, отмену или объединение.')
     if any(isinstance(a,ClassHour) for a in parsed.actions):
         from .class_hours import apply as apply_class_hours
         checked=deepcopy(state)
@@ -662,7 +691,10 @@ def _apply_individual_cancellations(state, day, actions):
 
 
 def prepared_state(state, day, actions):
-    work = deepcopy(state)
+    # The payload can carry years of history. These sections are read-only
+    # during a day preview; only the actual planning state needs a copy.
+    read_only=('dayVariants','annualDraft','journal','importNotes','students')
+    work=deepcopy(state,{id(state[k]):state[k] for k in read_only if k in state})
     work.setdefault('assistantConditions',{})[day]=deepcopy(actions)
     weekday = parse_date(day).weekday()
     apply_room_closures(work,weekday,actions)
@@ -675,7 +707,14 @@ def prepared_state(state, day, actions):
     _apply_individual_cancellations(work,day,actions)
     current=lessons_for_day(state,day)
     cancelled = {r['lessonId'] for r in actions if r['type'] == 'cancel_lesson'} | _window_cancellations(current,actions)
-    work['days'][day] = [deepcopy(l) for l in current if l['id'] not in cancelled]
+    work['days'][day] = [l for l in current if l['id'] not in cancelled]
+    from .substitutions import permissions,validate
+    replacements=permissions(actions)
+    for lesson in work['days'][day]:
+        if lesson['id'] not in replacements:continue
+        permit=replacements[lesson['id']]
+        validate(state,lesson,permit)
+        lesson['teacherIds']=[permit['teacherId']]
     from .class_hours import apply as apply_class_hours
     try:apply_class_hours(work,day,actions)
     except ValueError as error:raise AssistantError(str(error)) from None
@@ -706,16 +745,17 @@ def prepared_state(state, day, actions):
     for lesson in work['days'][day]:
         if lesson['id'] in permits:lesson['eighthOn']=day
         if lesson['id'] in pins:_set_rov_time(lesson,subjects[lesson['subjectId']],day,pins[lesson['id']])
-    from .technology import apply as apply_technology
-    try:apply_technology(work,day,actions)
-    except ValueError as error:raise AssistantError(str(error)) from None
+    if any(r['type']=='join_technology' for r in actions):
+        from .technology import apply as apply_technology
+        try:apply_technology(work,day,actions)
+        except ValueError as error:raise AssistantError(str(error)) from None
     return work
 
 
-def condition_problems(state, day, actions, result):
-    checked = prepared_state(state, day, actions)
-    expected_hours={c:l for l in lessons_for_day(checked,day) if l.get('classHour') for c in l['classIds']}
-    checked['days'][day] = deepcopy(lessons_for_day(state, day))
+def condition_problems(state, day, actions, result, *, planned=None):
+    planned=planned if planned is not None else prepared_state(state,day,actions)
+    expected_hours={c:l for l in planned['days'][day] if l.get('classHour') for c in l['classIds']}
+    checked={**planned,'days':{**planned['days'],day:lessons_for_day(state,day)}}
     errors = repair_problems(checked, result)
     after = result['after']
     if any(r['type']=='class_hour' and r.get('replaceLessonId') for r in actions):
@@ -771,6 +811,11 @@ def _complete_result(state, day, actions, result, before):
         if r['kind']=='individual' and r.get('learnerId') in learners
         or any(a['teacherId']==r['teacherId'] and a['first']<=r['last'] and r['first']<=a['last'] for a in absences))
     stats['moved']=changed_assignments(before,after)
+    old_teachers={l['id']:l['teacherIds'] for l in before}
+    from .substitutions import permissions
+    covers=permissions(actions)
+    stats['substitutions']=sum(l['id'] in old_teachers and old_teachers[l['id']]!=l['teacherIds']
+                               for l in after if l['id'] in covers)
     stats['classHours']=sum(bool(l.get('classHour')) for l in after)
     stats['classHourClasses']=sum(len(l['classIds']) for l in after if l.get('classHour'))
     cancelled_hours=[l for l in result['cancelled'] if l.get('classHour')]
@@ -827,7 +872,7 @@ def _variants(state, day, actions, limit=3, *, allow_drop=False):
         if fingerprint in seen:
             return False
         _complete_result(state,day,actions,result,before)
-        if condition_problems(state, day, actions, result):
+        if condition_problems(state, day, actions, result,planned=work):
             return False
         seen.add(fingerprint)
         found.append(result)
@@ -858,18 +903,26 @@ def _variants(state, day, actions, limit=3, *, allow_drop=False):
         if primary_bound is not None:
             main_final_bound=quality_key(main['stats'])[:4]
             proof=deepcopy(main['search'])
-    for index in range(1,limit):
+    misses=0
+    for index in range(1,2*limit):
         ordered=comparable(found,limit)
-        if not ordered or len(ordered)>=limit:break
+        if not ordered or limit<2:break
         best=ordered[0]['stats']
         limits={k:best[k] for k in ('classGapsAfter','lostHours','youngerLate','moved')}
         limits['moved']=_move_limit(limits['moved'])
+        if len(ordered)==limit:
+            # Search for a better podium, not more copies of the same cost.
+            limits['moved']=ordered[-1]['stats']['moved']-1
+            if limits['moved']<best['moved']:break
+            limits['improvement']=True
         try:
             result=solve_day(work,day,variant=index,baseline=before,hint=ordered[0]['after'],
                              excluded=[r['after'] for r in found],conditions=actions,_limits=limits)
         except DaySolverUnavailable:break
-        if result is None:break
-        accept(result)
+        if accept(result):misses=0
+        else:
+            misses+=1
+            if len(ordered)==limit or misses>=2:break
     if main_final_bound is not None:
         for result in found:
             primary=quality_key(result['stats'])[:4]
@@ -931,7 +984,7 @@ def _partial_result(state,day,actions,solver_available):
 
 
 def variants(state,day,actions):
-    from .solver_process import DaySolverUnavailable
+    from .solver_process import DaySolverUnavailable,calculate,isolated
     actions=canonical_actions(actions)
     key=search_fingerprint(state,day,actions)
     cached=_variant_cache.get(key)
@@ -939,6 +992,20 @@ def variants(state,day,actions):
     strict=[r for r in actions if r['type']!='allow_class_gaps']
     fallback=strict+[{'type':'allow_class_gaps'}]
     manual=any(r['type']=='place_lesson' for r in strict)
+    if isolated():
+        solver_state={k:v for k,v in state.items() if k not in ('dayVariants','annualDraft','journal','importNotes','students')}
+        solver_state['students']=[]
+        try:results=calculate('day-variants',{'state':solver_state,'day':day,'actions':actions})
+        except DaySolverUnavailable:
+            results=[] if manual else _partial_result(state,day,fallback,False)
+            for result in results:
+                result['title']='Резервный вариант'
+                result['warnings'].insert(0,'Расчёт прервался. Проверьте окна и отмены резервного варианта.')
+            return results
+        if any(condition_problems(state,day,result.get('actions',actions),result) for result in results):
+            raise AssistantError('Полученный вариант не прошёл проверку ограничений.')
+        if results:_variant_cache[key]=results
+        return results
     worker_ready=True
     for options in (strict,fallback):
         try:results=_calculate_variants(state,day,options)
