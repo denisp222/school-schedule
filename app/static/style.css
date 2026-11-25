@@ -766,6 +766,17 @@ dialog::backdrop {
 .modal-head h2 { font-size: 21px; }
 .modal-head .sub { margin-top: 3px; color: var(--muted); font-size: 12px; }
 .modal-body { padding: 20px 24px; overflow: auto; }
+.modal:has(.report-export-options) { max-height: 94vh; }
+.modal-body:has(.report-export-options) { display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+.report-export-options { display: flex; flex-wrap: wrap; gap: 12px; flex: none; }
+.report-export-options .field { flex: 1 1 215px; max-width: 320px; }
+.report-export-status { margin: 0; flex: none; font-size: 12px; }
+.report-export-status:empty { display: none; }
+.report-export-status.form-error { margin-top: 0; }
+.report-preview {
+  width: 100%; height: min(62vh, 680px); min-height: 120px;
+  border: 1px solid var(--line); border-radius: 10px; background: #fff;
+}
 .calculation-body { display: flex; align-items: flex-start; gap: 16px; padding: 24px; }
 .calculation-body h2 { font-size: 19px; }
 .calculation-body p { color: var(--muted); margin-top: 8px; }

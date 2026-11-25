@@ -489,13 +489,6 @@ def _student_table(table, state, current, base):
     if missing:
         raise ValueError("В ученическом шаблоне нет строк для: " + ", ".join(sorted(set(missing))) +
                          ". Занятия не будут скрыты — выберите другой шаблон.")
-    # Day title above the table.
-    for paragraph in table.getparent().findall("w:p", NS):
-        text = _text(paragraph)
-        if text.strip() in ("ПОНЕДЕЛЬНИК", "ВТОРНИК", "СРЕДА", "ЧЕТВЕРГ", "ПЯТНИЦА"):
-            _set_paragraph_text(paragraph, DAY_UPPER[parse_date(state["_export_day"]).weekday()], False)
-
-
 # --------------------------------------------------------------------------
 # public API
 
@@ -533,6 +526,9 @@ def export_docx(state: dict, day: str, audience: str, update_names: bool = True,
             _teacher_rows(table, state, current, base, update_names)
         else:
             _student_table(table, state, current, base)
+        for paragraph in table.getparent().findall("w:p", NS):
+            if _text(paragraph) in DAY_UPPER[:5]:
+                _set_paragraph_text(paragraph, DAY_UPPER[weekday], False)
         payload = E.tostring(root, encoding="UTF-8", xml_declaration=True, standalone=True)
         stream = BytesIO()
         with ZipFile(stream, "w", ZIP_DEFLATED) as target:

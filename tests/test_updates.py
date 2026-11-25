@@ -128,6 +128,47 @@ def test_generic_reports_support_arbitrary_classes_and_teachers(tmp_path,monkeyp
             assert ('Учитель 1' if audience=='teachers' else 'Матем.') in text
 
 
+@pytest.mark.parametrize('audience', ['teachers', 'students'])
+@pytest.mark.parametrize('mode', ['changes', 'clean', 'base'])
+def test_preview_renders_the_same_word_document_that_can_be_saved(tmp_path, monkeypatch, audience, mode):
+    from fastapi.testclient import TestClient
+    from lxml import etree
+    from app import exporter, model, server, word_preview
+    from app.store import Store
+
+    state = model.normalize_state(json.loads((Path(__file__).parents[1] / 'app/demo_seed.json').read_text(encoding='utf-8')))
+    day = '2026-11-10'
+    state['days'][day] = []
+    monkeypatch.setattr(server, 'store', Store(tmp_path / 'report.sqlite3', lambda: state))
+    monkeypatch.setattr(exporter, 'template_path', lambda *_: tmp_path / 'missing.docx')
+    client = TestClient(server.app)
+    url = f'/api/export/{audience}/{day}'
+    request = client.get(url, params={'mode': mode, 'preview': 1})
+    assert request.status_code == 200
+    report = request.json()
+    assert report['filename'].startswith('Вторник 10.11.2026') and report['filename'].endswith('.docx')
+    saved = base64.b64decode(report['document'], validate=True)
+
+    def render(document, _):
+        assert document == saved
+        return b'%PDF-example', 'Word'
+
+    monkeypatch.setattr(word_preview, 'render_pdf', render)
+    preview = client.get('/api/report-preview/' + report['previewId'])
+    assert preview.headers['Content-Type'] == 'application/pdf' and preview.content == b'%PDF-example'
+    assert preview.headers['X-Schedule-Preview-Renderer'] == 'Word'
+    assert client.get('/api/report-preview/expired').status_code == 404
+    direct = client.get(url, params={'mode': mode})
+    with ZipFile(BytesIO(saved)) as prepared, ZipFile(BytesIO(direct.content)) as downloaded:
+        xml = prepared.read('word/document.xml')
+        assert xml == downloaded.read('word/document.xml')
+    root = etree.fromstring(xml)
+    assert root.xpath('//w:body/w:p//w:t/text()', namespaces=exporter.NS) == ['ВТОРНИК']
+    cell = root.findall('.//w:tbl/w:tr', exporter.NS)[1].findall('w:tc', exporter.NS)[1]
+    assert (cell.findtext('.//w:t', namespaces=exporter.NS) == '—') == (mode != 'base')
+    assert cell.xpath('string(w:tcPr/w:shd/@w:fill)', namespaces=exporter.NS) == (exporter.RED_FILL if mode == 'changes' else '')
+
+
 def test_helper_waits_checks_hash_and_quotes_paths(signed):
     _,payload,_,_=signed
     script=updates.install_script("C:/O'Brien/update.exe",'C:/School app',123,payload['asset']['sha256'])

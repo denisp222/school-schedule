@@ -21,5 +21,8 @@ if __name__ == '__main__':
     elif len(sys.argv)==4 and sys.argv[1]=='--solver-worker':
         from app.solver_process import worker
         worker(sys.argv[2],sys.argv[3])
+    elif len(sys.argv)==4 and sys.argv[1]=='--word-preview':
+        from app.word_preview import render_in_word
+        render_in_word(sys.argv[2],sys.argv[3])
     else:
         run()

@@ -1007,9 +1007,109 @@ async function applyRepair(buttonNode) {
    -------------------------------------------------------------------------- */
 
 function openExport() {
-  openModal({title:'Выгрузить отчёт',sub:fmtLongCap(S.date),
-    body:`<label class="field"><span>Расписание</span><select class="input" id="export-mode"><option value="changes">Текущее, изменения красным</option><option value="clean">Текущее, без выделений</option><option value="base">Базовое</option></select></label>`,
-    foot:`${button('Для учеников','download-export','ghost','download','data-audience="students"')}${button('Для учителей','download-export','primary','download','data-audience="teachers"')}`});
+  const date = S.date;
+  openModal({title:'Выгрузить отчёт',sub:fmtLongCap(date),wide:true,
+    body:`<div class="report-export-options">
+      <label class="field"><span>Для кого</span><select class="input" id="export-audience"><option value="teachers">Для учителей</option><option value="students">Для учеников</option></select></label>
+      <label class="field"><span>Расписание</span><select class="input" id="export-mode"><option value="changes">Текущее, изменения красным</option><option value="clean">Текущее, без выделений</option><option value="base">Базовое</option></select></label>
+    </div>
+    <p class="report-export-status muted" id="export-status" role="status"></p>
+    <iframe class="report-preview" id="export-preview" title="Предпросмотр документа Word" hidden></iframe>`,
+    foot:`${button('Закрыть','close-modal','ghost')}<button type="button" class="btn primary" id="export-save" disabled>${icon('download')}Сохранить Word</button>`});
+
+  const dialog = $('#modal');
+  const audience = $('#export-audience');
+  const mode = $('#export-mode');
+  const status = $('#export-status');
+  const preview = $('#export-preview');
+  const save = $('#export-save');
+  const active = () => dialog.open && preview.isConnected;
+  let request, prepared, pdfUrl;
+
+  function clearPreview() {
+    preview.hidden = true;
+    preview.removeAttribute('src');
+    if (pdfUrl) URL.revokeObjectURL(pdfUrl);
+    pdfUrl = null;
+  }
+
+  async function readPreparedResponse(response) {
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Не удалось подготовить отчёт.');
+    }
+    return response;
+  }
+
+  async function loadPreview() {
+    request?.abort();
+    const controller = new AbortController();
+    request = controller;
+    const timeout = setTimeout(() => controller.abort(), 55000);
+    prepared = null;
+    save.disabled = true;
+    clearPreview();
+    status.classList.remove('form-error');
+    status.textContent = 'Готовим документ…';
+    try {
+      const options = {signal:controller.signal};
+      const response = await readPreparedResponse(await fetch(`/api/export/${audience.value}/${date}?mode=${mode.value}&preview=1`, options));
+      const report = await response.json();
+      if (!active() || request !== controller) return;
+      prepared = report;
+      save.disabled = false;
+      status.textContent = 'Готовим страницы документа…';
+      const pdf = await readPreparedResponse(await fetch(`/api/report-preview/${encodeURIComponent(report.previewId)}`, options));
+      const pages = await pdf.blob();
+      if (!active() || request !== controller) return;
+      pdfUrl = URL.createObjectURL(pages);
+      preview.src = `${pdfUrl}#view=FitH&navpanes=0`;
+      preview.hidden = false;
+      status.textContent = pdf.headers.get('X-Schedule-Preview-Renderer') === 'LibreOffice'
+        ? 'Открыто в LibreOffice. Разбивка страниц в Word может отличаться.' : '';
+    } catch (error) {
+      if (!active() || request !== controller) return;
+      status.classList.add('form-error');
+      status.textContent = error.name === 'AbortError' ? 'Отчёт готовится слишком долго. Повторите попытку.'
+        : error instanceof TypeError || error instanceof SyntaxError ? 'Не удалось открыть предпросмотр. Повторите попытку.' : error.message;
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'text-btn';
+      retry.textContent = 'Повторить';
+      retry.addEventListener('click', loadPreview);
+      status.append(' ', retry);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  audience.addEventListener('change', loadPreview);
+  mode.addEventListener('change', loadPreview);
+  dialog.addEventListener('close', () => {
+    request?.abort();
+    prepared = null;
+    clearPreview();
+  }, {once:true});
+  save.addEventListener('click', async () => {
+    if (!prepared) return;
+    audience.disabled = mode.disabled = save.disabled = true;
+    const label = save.innerHTML;
+    save.innerHTML = `${icon('clock')}Сохраняем…`;
+    try {
+      const bytes = Uint8Array.from(atob(prepared.document), char => char.charCodeAt(0));
+      const blob = new Blob([bytes], {type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
+      const result = await savePreparedFile(blob, prepared.filename);
+      if (active()) showExportResult(result);
+    } catch (error) {
+      if (!active()) return;
+      status.classList.add('form-error');
+      status.textContent = error.message;
+    } finally {
+      audience.disabled = mode.disabled = save.disabled = false;
+      save.innerHTML = label;
+    }
+  });
+  loadPreview();
 }
 
 async function savePreparedFile(blob, filename) {
@@ -1050,37 +1150,6 @@ async function downloadFile(url, filename) {
   if (!response.ok) throw new Error('Не удалось скачать файл.');
   const blob = await response.blob();
   showExportResult(await savePreparedFile(blob,filename || 'Расписание.json'));
-}
-
-async function downloadExport(buttonNode) {
-  const audience = buttonNode.dataset.audience;
-  const names=1;
-  const mode=$('#export-mode')?.value || 'changes';
-  buttonNode.disabled = true;
-  const label = buttonNode.innerHTML;
-  const controller=new AbortController();
-  const timer=setTimeout(()=>controller.abort(),60000);
-  buttonNode.innerHTML = `${icon('clock')}Готовим…`;
-  try {
-    const response = await fetch(`/api/export/${audience}/${S.date}?names=${names}&mode=${mode}`,{signal:controller.signal});
-    if (!response.ok) {
-      let detail = 'Не удалось подготовить отчёт.';
-      try { const data = await response.json(); if (typeof data.detail === 'string') detail = data.detail; } catch (error) { /* ignore */ }
-      throw new Error(detail);
-    }
-    const blob = await response.blob();
-    const disposition=response.headers.get('Content-Disposition') || '';
-    const encoded=disposition.match(/filename\*=UTF-8''([^;]+)/i);
-    const filename=encoded?decodeURIComponent(encoded[1]):'Расписание.docx';
-    const saved=await savePreparedFile(blob,filename);
-    showExportResult(saved);
-  } catch (error) {
-    await askConfirm({title:'Не удалось сохранить документ',text:error.name==='AbortError'?'Подготовка отчёта заняла слишком много времени. Повторите сохранение.':error.message,yes:'Понятно'});
-  } finally {
-    clearTimeout(timer);
-    buttonNode.disabled = false;
-    buttonNode.innerHTML = label;
-  }
 }
 
 /* --------------------------------------------------------------------------
@@ -2273,7 +2342,6 @@ document.addEventListener('click', async (event) => {
       await downloadFile(target.dataset.url, target.dataset.name);
       return;
     }
-    if (action === 'download-export') { await downloadExport(target); return; }
     if (action === 'changes') { openChanges(); return; }
     if (action === 'issues') { openIssues(); return; }
     if (action === 'reset-day') { await resetDay(); return; }

@@ -179,6 +179,11 @@ def run_window(url, data, resources, on_ready, *, on_loaded=None, qa_browser_arg
                 core.Settings.IsStatusBarEnabled=False
                 core.Settings.AreDevToolsEnabled=False
                 core.Settings.AreBrowserAcceleratorKeysEnabled=False
+                try:
+                    from Microsoft.Web.WebView2.Core import CoreWebView2PdfToolbarItems as PdfItems
+                    core.Settings.HiddenPdfToolbarItems = PdfItems.Save | PdfItems.SaveAs | PdfItems.Print
+                except Exception:
+                    logging.debug('PDF toolbar settings are unavailable in this WebView runtime')
                 core.DownloadStarting+=save_download
                 core.WebMessageReceived+=save_message
                 def navigation_finished(sender,event):

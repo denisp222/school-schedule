@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+from base64 import b64encode
 import io
 import json
 import os
@@ -56,6 +57,7 @@ from .version import VERSION
 from .previews import PreviewStore
 repair_previews = PreviewStore()
 week_previews = PreviewStore(limit=10)
+report_previews = PreviewStore(limit=8, ttl=300)
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("SCHEDULE_DATA", str(ROOT.parent / "data")))
 DATA.mkdir(parents=True, exist_ok=True)
@@ -148,7 +150,7 @@ async def local_only(request: Request, call_next):
     response.headers["Cache-Control"] = "no-store"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data:; connect-src 'self'; font-src 'self'; "
+        "img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-src blob:; "
         "frame-ancestors 'none'; object-src 'none'; base-uri 'none'"
     )
     return response
@@ -1282,7 +1284,22 @@ def export(audience: str, day: str, names: int = 1, preview: int = 0,mode: str='
     who = "учителя" if audience == "teachers" else "ученики"
     suffix={'changes':'с изменениями','clean':'без выделения','base':'базовое'}[mode]
     filename = f"{DAY_FILE[parse_date(day).weekday()]} {_file_date(day)} — {who} — {suffix}.docx"
+    if preview:
+        key = uuid.uuid4().hex
+        report_previews[key] = data
+        return {"filename": filename, "document": b64encode(data).decode('ascii'), "previewId": key}
     return attachment(data, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", filename)
+
+
+@app.get('/api/report-preview/{key}')
+def preview_report(key: str):
+    from .word_preview import render_pdf
+
+    document = report_previews.get(key)
+    if document is None:
+        raise HTTPException(404, 'Срок просмотра истёк. Откройте отчёт заново.')
+    pdf, renderer = render_pdf(document, DATA)
+    return Response(pdf, media_type='application/pdf', headers={'X-Schedule-Preview-Renderer': renderer})
 
 
 def _csv_safe(value) -> str:
